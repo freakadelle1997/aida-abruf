@@ -1,0 +1,56 @@
+name: AIDA-Abruf
+# Stündlich 8–20 Uhr deutscher Zeit (zwei Cron-Zeilen für Sommer-/Winterzeit, ci/slot.py wählt).
+# Um 8 Uhr zusätzlich: Katalog (täglich Liste + geänderte Details, montags komplett) und die
+# freien Kabinen aller Reisen der nächsten 4 Monate. Daten liegen im privaten Repo aida-daten.
+on:
+  schedule:
+    - cron: "0 6-18 * * *"
+    - cron: "0 7-19 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "trips | daily | weekly | catalog | fleet"
+        default: trips
+concurrency:
+  group: aida-abruf
+  cancel-in-progress: false
+permissions:
+  contents: write
+env:
+  TZ: Europe/Berlin   # Zeitstempel in deutscher Zeit
+jobs:
+  abruf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zeitfenster
+        id: slot
+        run: python3 ci/slot.py "${{ github.event_name }}" "${{ github.event.schedule }}" "${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+      - if: steps.slot.outputs.run == 'yes'
+        uses: actions/checkout@v4
+        with:
+          repository: freakadelle1997/aida-daten
+          path: daten
+          ssh-key: ${{ secrets.DATEN_DEPLOY_KEY }}
+      - if: steps.slot.outputs.run == 'yes'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: steps.slot.outputs.run == 'yes'
+        run: pip install -q playwright==1.48.0
+      - if: steps.slot.outputs.run == 'yes'
+        name: Abruf
+        env:
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: xvfb-run -a bash ci/run.sh "${{ steps.slot.outputs.mode }}"
+      - if: steps.slot.outputs.run == 'yes' && steps.slot.outputs.mode != 'trips'
+        name: Lebenszeichen (GitHub stoppt Zeitpläne nach 60 Tagen ohne Commit)
+        run: |
+          if [ "$(date +%d)" = "01" ] || [ ! -f .keepalive ]; then
+            date -Iseconds > .keepalive
+            git config user.name "aida-abruf"; git config user.email "aida-abruf@users.noreply.github.com"
+            git add .keepalive && git commit -q -m "Lebenszeichen" && git push -q || true
+          fi
