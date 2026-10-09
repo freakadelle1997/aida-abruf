@@ -391,6 +391,10 @@ def build(con=None):
             days = sorted(h.get("counts") or {})
             if not days:
                 continue
+            if h.get("choice") is False:
+                t["fleet"] = {"date": days[-1], "choice": False}
+                nfleet += 1
+                continue
             cur_c = h["counts"][days[-1]]
             prev_c = h["counts"][days[-2]] if len(days) > 1 else None
             mv = (h.get("moves") or {}).get(days[-1]) or {}
@@ -859,12 +863,13 @@ function focusBlock(t, ti) {
   const df = prev && prev.focus_free != null ? last.focus_free - prev.focus_free : null;
   const dp = prev && prev.focus_allin != null && last.focus_allin != null ? last.focus_allin - prev.focus_allin : null;
   const dpAll = first.focus_allin != null && last.focus_allin != null ? last.focus_allin - first.focus_allin : null;
-  const low = last.focus_free != null && last.focus_free <= 20;
+  const assigned = t.cabin_choice === false;   // keine Kabinenwahl -> keine Freizahl
+  const low = !assigned && last.focus_free != null && last.focus_free <= 20;
   return `<div class="focus">
     <h3>Deine Kabine: ${t.focus.group}, ${t.focus.name} (${t.focus.code}) · PREMIUM ALL IN</h3>
     <div class="tiles">
-      <div class="tile"><div class="k">Frei</div><div class="v">${last.focus_free ?? "–"}</div>
-        <div class="d">${low ? '<span class="up">wird knapp</span> · ' : ""}zuletzt ${sign(df, "", true)}</div></div>
+      <div class="tile"><div class="k">Frei</div><div class="v">${assigned ? "–" : (last.focus_free ?? "–")}</div>
+        <div class="d">${assigned ? "Kabine wird zugeteilt" : `${low ? '<span class="up">wird knapp</span> · ' : ""}zuletzt ${sign(df, "", true)}`}</div></div>
       <div class="tile"><div class="k">Preis ALL IN</div><div class="v">${eur(last.focus_allin)}</div>
         <div class="d">zuletzt ${sign(dp, " €")}</div></div>
       <div class="tile"><div class="k">Preis seit Beginn</div><div class="v">${sign(dpAll, " €")}</div>
@@ -918,9 +923,10 @@ function tripCard(t, ti) {
     ? sign(now.focus_free - prev.focus_free, "", true) : "";
   const dPrice = t.focus && prev && now.focus_allin != null && prev.focus_allin != null
     ? sign(now.focus_allin - prev.focus_allin, " €") : "";
-  const low = t.focus && now.focus_free != null && now.focus_free <= 20;
+  const assigned = t.cabin_choice === false;
+  const low = !assigned && t.focus && now.focus_free != null && now.focus_free <= 20;
   const fb = t.focus
-    ? `<div class="focusbadge">Deine Kabine ${t.focus.code}: ${now.focus_free ?? "–"} frei ${dFree}${low ? " · wird knapp" : ""}</div>`
+    ? `<div class="focusbadge">Deine Kabine ${t.focus.code}: ${assigned ? "wird zugeteilt" : `${now.focus_free ?? "–"} frei ${dFree}${low ? " · wird knapp" : ""}`}</div>`
     : "";
   const rf = recentRefill(t);
   const badges = (rf.length ? `<span class="chip refill">Nachschub: ${rf.map(e => e.code + " +" + e.plus).join(", ")}</span>` : "")
@@ -936,8 +942,11 @@ function tripCard(t, ti) {
     ${fb}
     ${t.focus ? `<div class="cstat"><span class="k">${t.focus.group} (${t.focus.code}) ALL IN</span>
       <span class="v">${eur(now.focus_allin)} ${dPrice}</span></div>` : ""}
-    <div class="cstat"><span class="k">Frei gesamt</span><span class="v">${t.free_total.toLocaleString("de-DE")} / ${t.ship_total.toLocaleString("de-DE")}</span></div>
-    <div class="cstat"><span class="k">Belegt</span><span class="v">${occ.toFixed(0)} %</span></div>
+    ${t.cabin_choice === false
+      ? `<div class="cstat"><span class="k">Kabinen</span><span class="v">AIDA teilt zu</span></div>
+         <div class="cstat"><span class="k">Belegt</span><span class="v">unbekannt</span></div>`
+      : `<div class="cstat"><span class="k">Frei gesamt</span><span class="v">${t.free_total.toLocaleString("de-DE")} / ${t.ship_total.toLocaleString("de-DE")}</span></div>
+         <div class="cstat"><span class="k">Belegt</span><span class="v">${occ.toFixed(0)} %</span></div>`}
     ${t.error ? '<div class="arrow" style="color:var(--up)">⚠ letzter Abruf fehlgeschlagen</div>' : ""}
     <div class="arrow">Details ansehen →</div>
   </button>`;
@@ -1105,6 +1114,7 @@ function renderDetail(ti) {
       ${changesBlock(t)}
       ${focusBlock(t, ti)}
       <div class="sect">Ganzes Schiff</div>
+      ${t.cabin_choice === false ? `<p class="mut" style="margin:0 0 22px">Für diese Reise gibt AIDA keine Kabinenliste heraus (Kabine wird bei der Buchung zugeteilt) – freie Kabinen und Belegung sind deshalb nicht bekannt, nur die Preise.</p>` : `
       <div class="tiles">
         <div class="tile"><div class="k">Freie Kabinen</div><div class="v">${t.free_total.toLocaleString("de-DE")}</div>
           <div class="d">von ${t.ship_total.toLocaleString("de-DE")} an Bord</div></div>
@@ -1115,7 +1125,7 @@ function renderDetail(ti) {
         <div class="tile"><div class="k">Seit Beobachtungsbeginn</div><div class="v">${sign(t.free_total - t.first_free, "", true)}</div>
           <div class="d">seit ${d(t.first_day)}</div></div>
       </div>
-      <div class="chart" style="margin-bottom:18px"><h3>Freie Kabinen gesamt</h3><div class="box"><canvas id="ct${ti}"></canvas></div></div>
+      <div class="chart" style="margin-bottom:18px"><h3>Freie Kabinen gesamt</h3><div class="box"><canvas id="ct${ti}"></canvas></div></div>`}
       <div class="charts">
         <div class="chart"><h3>Freie Kabinen je Kabinentyp</h3><div class="box"><canvas id="cf${ti}"></canvas></div></div>
         <div class="chart"><h3>Günstigster Kabinenpreis PREMIUM ALL IN je Typ</h3><div class="box"><canvas id="cp${ti}"></canvas></div></div>
@@ -1158,7 +1168,7 @@ function renderDetail(ti) {
     elements: {line: {borderWidth: 2, tension: 0}, point: {radius: t.series.length > 20 ? 0 : 4, hoverRadius: 5}}
   });
   const intFmt = v => Math.round(v).toLocaleString("de-DE");
-  charts.push(new Chart($("ct" + ti), {type: "line", data: {labels, datasets: [{label: "Frei gesamt",
+  if ($("ct" + ti)) charts.push(new Chart($("ct" + ti), {type: "line", data: {labels, datasets: [{label: "Frei gesamt",
     borderColor: css("--s1"), backgroundColor: css("--s1"), data: t.series.map(s => s.free_total), spanGaps: true}]},
     options: base(intFmt)}));
   const ds = key => used.map(g => ({label: g.name, borderColor: css(g.color), backgroundColor: css(g.color),
@@ -1232,7 +1242,7 @@ function kFiltered() {
     (!KF.nmin || t.nights >= +KF.nmin) && (!KF.nmax || t.nights <= +KF.nmax) &&
     (!KF.pmax || (t.from_pp && t.from_pp <= +KF.pmax)) && (!KF.camp || (t.campaigns && t.campaigns.length)));
   const key = {start: t => t.start, price: t => t.from_pp || 1e9, nights: t => t.nights,
-               free: t => t.fleet ? t.fleet.free : 1e9}[KF.sort] || (t => t.start);
+               free: t => t.fleet && t.fleet.free != null ? t.fleet.free : 1e9}[KF.sort] || (t => t.start);
   return r.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 function drawKList() {
@@ -1244,7 +1254,8 @@ function drawKList() {
       <div class="top" onclick="toggleK('${t.id}')">
         <h3>${t.title}</h3>
         <span class="m">${t.ship} · ${d(t.start)} – ${d(t.end)} · ${t.nights} Nächte${t.region ? " · " + t.region : ""}${t.flight ? " · inkl. Flug" : ""}</span>
-        ${t.fleet ? `<span class="m" title="freie Kabinen laut AIDA (je Kategorie max. 100 angezeigt), Stand ${d(t.fleet.date)}"><b>${t.fleet.free.toLocaleString("de-DE")}${t.fleet.capped.length ? "+" : ""} frei</b>${t.fleet.prev != null ? ` (${t.fleet.free - t.fleet.prev >= 0 ? "+" : ""}${t.fleet.free - t.fleet.prev})` : ""}</span>` : ""}
+        ${t.fleet && t.fleet.choice === false ? `<span class="m">Kabine wird zugeteilt</span>` : ""}
+        ${t.fleet && t.fleet.choice !== false ? `<span class="m" title="freie Kabinen laut AIDA (je Kategorie max. 100 angezeigt), Stand ${d(t.fleet.date)}"><b>${t.fleet.free.toLocaleString("de-DE")}${t.fleet.capped.length ? "+" : ""} frei</b>${t.fleet.prev != null ? ` (${t.fleet.free - t.fleet.prev >= 0 ? "+" : ""}${t.fleet.free - t.fleet.prev})` : ""}</span>` : ""}
         <span class="p">${t.from_pp ? "ab " + eur(t.from_pp) + " p. P." : ""}</span>
         <button class="mark${on || pend ? " on" : ""}" onclick="event.stopPropagation(); markK('${t.id}')">${on ? "✓ hinterlegt" : pend ? "✓ vorgemerkt" : "+ hinterlegen"}</button>
       </div>
@@ -1260,7 +1271,7 @@ function toggleK(id) {
   more.hidden = false;
   more.innerHTML = `<div class="leafmap" id="km_${id}" style="height:300px"></div>
     ${t.itinerary ? itineraryFromDetail(t.itinerary.map((p, i) => Object.assign({day: i + 1}, p))) : ""}
-    ${t.fleet ? `<div class="sect">Freie Kabinen je Kategorie (Stand ${d(t.fleet.date)})</div>
+    ${t.fleet && t.fleet.choice !== false ? `<div class="sect">Freie Kabinen je Kategorie (Stand ${d(t.fleet.date)})</div>
       <p class="kmeta">${Object.entries(t.fleet.cats).sort().map(([k, v]) => `<b>${k}</b> ${v}${v >= 100 ? "+" : ""}`).join(" · ")}
       ${t.fleet.prev != null ? `<br>Seit dem Vortag: ${t.fleet.plus} Kabinen neu frei, ${t.fleet.minus} weg` : ""}</p>` : ""}
     ${tariffMatrix(t.tariffs)}

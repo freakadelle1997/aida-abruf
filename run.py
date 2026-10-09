@@ -223,6 +223,7 @@ def run_fleet():
                                                           "start": t["start"], "counts": {}, "moves": {}}
         old = {n for v in (h.get("cabins") or {}).values() for n in v}
         new = {n for v in cats.values() for n in v}
+        h["choice"] = bool(new)          # keine einzige Kabine -> AIDA teilt zu (keine Kabinenwahl)
         h["counts"][today] = {k: len(v) for k, v in cats.items() if v}
         if h.get("cabins") is not None:
             mv = h["moves"].setdefault(today, {"+": [], "-": []})
