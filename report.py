@@ -561,6 +561,12 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .tabs a { padding: 9px 14px; color: var(--text-2); text-decoration: none; font-weight: 600; font-size: 14px;
   border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs a.on { color: var(--s1); border-bottom-color: var(--s1); }
+.maps { display: grid; grid-template-columns: 1fr; gap: 14px; margin: 0 0 18px; }
+.maps figure { margin: 0; min-width: 0; }
+.maps .routemap { max-width: none; margin: 0 0 6px; aspect-ratio: 4/3; object-fit: cover; }
+.maps .leafmap { max-width: none; height: auto; aspect-ratio: 4/3; margin: 0 0 6px; }
+.maps .routecap { margin: 0; }
+@media (min-width: 900px) { .maps { grid-template-columns: 1fr 1fr; } }
 .leafmap { width: 100%; max-width: 760px; height: 380px; border-radius: 10px; border: 1px solid var(--border);
   margin: 0 0 8px; z-index: 0; }
 .daymark { background: var(--s1); color: #fff; border-radius: 11px; font-size: 11px; font-weight: 700;
@@ -1089,9 +1095,11 @@ function renderDetail(ti) {
       ${t.offer ? `<div class="offer">${t.offer.from_pp ? `<span><span class="from">ab ${eur(t.offer.from_pp)}</span> p. P. (${({IND: "PREMIUM", INDAI: "PREMIUM ALL IN", CLA: "CLASSIC", LIG: "LIGHT", COMAI: "COMFORT ALL IN"})[t.offer.from_tariff] || t.offer.from_tariff})</span>` : ""}
         ${(t.offer.amenities || []).map(a => `<span class="mut">${a}</span>`).join("")}</div>
         <div class="chips">${offerChips(t)}</div>` : ""}
-      ${t.map_file ? `<img class="routemap" src="${t.map_file}" alt="Route ${t.title}"><div class="routecap">Reiseroute laut AIDA</div>` : ""}
       ${t.cabin_choice === false ? `<div class="warnbox"><b>Kabine wird zugeteilt:</b> Für diese Reise lässt sich keine bestimmte Kabinennummer wählen – AIDA teilt die Kabine bei der Buchung zu.</div>` : ""}
-      ${t.port_coords && Object.keys(t.port_coords).length ? `<div class="leafmap" id="lm${ti}"></div><div class="routecap" style="margin:0 0 18px">Häfen laut Reiseverlauf · Karte © OpenStreetMap</div>` : ""}
+      <div class="maps">
+        ${t.map_file ? `<figure><img class="routemap" src="${t.map_file}" alt="Route ${t.title}"><figcaption class="routecap">Reiseroute laut AIDA</figcaption></figure>` : ""}
+        ${t.port_coords && Object.keys(t.port_coords).length ? `<figure><div class="leafmap" id="lm${ti}"></div><figcaption class="routecap">Häfen laut Reiseverlauf · Karte © OpenStreetMap</figcaption></figure>` : ""}
+      </div>
       ${itinerary(t)}
       ${t.tariffs && t.tariffs.length ? `<div class="sect">Preise je Kabinenart und Tarif</div>${tariffMatrixDetail(t)}<p class="note" style="margin-top:-8px">Kabinenpreis für 2 Erwachsene (günstigste Kabine der Kabinenart${t.focus_prices ? `, in der Zeile ${t.focus_prices.code} der Preis deiner Wunschkategorie ${t.focus_prices.code}; G = CLASSIC-Garantiekabine ohne Kabinenwahl` : ""}). Darunter: inkl. Hin- und Rückflug ab ${FLY_FROM[0]}, sonst ab ${FLY_FROM[1]}; F&amp;F = Family &amp; Friends (−10 % auf den Reisepreis, −7 % auf den Flug). Grün = günstigster Tarif je Kabinenart.</p>` : ""}
       ${changesBlock(t)}
