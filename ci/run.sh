@@ -19,6 +19,8 @@ TMPLOG="$RUNNER_TEMP/lauf.log"
 exec 3>&1 >>"$TMPLOG" 2>&1
 trap 'echo "Lauf beendet (Code $?) – Details im privaten Protokoll" >&3' EXIT
 echo "=== $(date '+%F %T') Modus $MODE ==="
+# Nur reine Zählerzeilen (ohne Reisenamen) live ins öffentliche Protokoll, alles andere privat
+progress() { tee -a "$TMPLOG" | grep --line-buffered -E '^ *(Details|freie Kabinen|Preise) [0-9]+/[0-9]+|^Katalog: [0-9]+ Reisen|^Flotte: [0-9]+ Reisen' >&3 || true; }
 
 # Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
 # hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
@@ -31,11 +33,11 @@ python import_db.py daten
 if [[ "$MODE" != "deploy" ]]; then
 python intake.py || echo "intake fehlgeschlagen"
 case "$MODE" in
-    daily)            python run.py --catalog || echo "Katalog fehlgeschlagen" ;;   # täglich alle Details (Preisverlauf)
-    weekly|catalog|both) python run.py --catalog || echo "Katalog fehlgeschlagen" ;;
+    daily)            python -u run.py --catalog 2>&1 | progress || echo "Katalog fehlgeschlagen" ;;   # täglich alle Details (Preisverlauf)
+    weekly|catalog|both) python -u run.py --catalog 2>&1 | progress || echo "Katalog fehlgeschlagen" ;;
 esac
 case "$MODE" in
-    daily|weekly|fleet) python run.py --fleet || echo "Flotte fehlgeschlagen" ;;
+    daily|weekly|fleet) python -u run.py --fleet 2>&1 | progress || echo "Flotte fehlgeschlagen" ;;
 esac
 if [[ "$MODE" != "catalog" && "$MODE" != "fleet" ]]; then
     python run.py || echo "Abruf mit Fehlern"
