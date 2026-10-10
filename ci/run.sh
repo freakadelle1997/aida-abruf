@@ -6,7 +6,7 @@
 set -euo pipefail
 MODE="${1:-trips}"
 CODE="$GITHUB_WORKSPACE"                 # Checkout des öffentlichen Abruf-Repos (nur Code)
-ROOT="$GITHUB_WORKSPACE/daten"           # Checkout des privaten Daten-Repos aida-daten
+ROOT="$GITHUB_WORKSPACE/daten"           # Checkout des privaten Daten-Repos fernweh-daten
 RT="$RUNNER_TEMP/rt"                     # Laufzeitordner wie auf dem Mac: Code + data/ + daten/
 mkdir -p "$RT/data"
 cp "$CODE"/*.py "$RT/"

@@ -28,7 +28,7 @@ jobs:
       - if: steps.slot.outputs.run == 'yes'
         uses: actions/checkout@v4
         with:
-          repository: freakadelle1997/aida-daten
+          repository: freakadelle1997/fernweh-daten
           path: daten
           ssh-key: ${{ secrets.DATEN_DEPLOY_KEY }}
       - if: steps.slot.outputs.run == 'yes'
