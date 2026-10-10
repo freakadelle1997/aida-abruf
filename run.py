@@ -223,6 +223,10 @@ def run_fleet():
     fd = d / "fleet"
     fd.mkdir(exist_ok=True)
     stamp = datetime.now().isoformat(timespec="minutes")
+    # Tageszusammenfassung fürs Dashboard: verschwundene/zurückgekehrte Kabinen und ihr Wert,
+    # nur in Kategorien unter 100 (darüber verschiebt sich nur AIDAs sichtbares Fenster)
+    summ = {"ts": stamp, "trips": 0, "free": 0, "sold": 0, "back": 0, "sold_value": 0.0, "back_value": 0.0,
+            "unpriced": 0, "by_ship": {}, "by_trip": {}}
     for t in trips:
         cats = res.get(t["id"])
         if not cats:
@@ -232,6 +236,34 @@ def run_fleet():
                                                           "start": t["start"], "counts": {}, "moves": {}}
         old = {n for v in (h.get("cabins") or {}).values() for n in v}
         new = {n for v in cats.values() for n in v}
+        summ["trips"] += 1
+        summ["free"] += len(new)
+        if h.get("cabins") is not None:
+            pr_today = (prices.get(t["id"]) or {})
+            pr_prev = (h.get("prices") or {}).get(max(h.get("prices") or {"": 0}), {}) if h.get("prices") else {}
+            def value(code):
+                p = pr_today.get(code) or {}
+                v = p.get("IND") or (min(p.values()) if p else None)
+                if v is None:
+                    q = pr_prev.get(code) or {}
+                    v = q.get("PREMIUM") or (min(q.values()) if q else None)
+                return v
+            for code in set(h["cabins"]) | set(cats):
+                o, n = set(h["cabins"].get(code, [])), set(cats.get(code, []))
+                if len(o) >= 100 or len(n) >= 100:
+                    continue
+                gone, back = o - n, n - o
+                if not gone and not back:
+                    continue
+                v = value(code)
+                if v is None:
+                    summ["unpriced"] += len(gone)
+                summ["sold"] += len(gone); summ["back"] += len(back)
+                summ["sold_value"] += (v or 0) * len(gone); summ["back_value"] += (v or 0) * len(back)
+                sh = summ["by_ship"].setdefault(t["ship"], [0, 0, 0.0])
+                sh[0] += len(gone); sh[1] += len(back); sh[2] += (v or 0) * len(gone)
+                tr = summ["by_trip"].setdefault(t["id"], [0, 0, 0.0])
+                tr[0] += len(gone); tr[1] += len(back); tr[2] += (v or 0) * len(gone)
         h["choice"] = bool(new)          # keine einzige Kabine -> AIDA teilt zu (keine Kabinenwahl)
         h["counts"][today] = {k: len(v) for k, v in cats.items() if v}
         if h.get("cabins") is not None:
@@ -245,6 +277,14 @@ def run_fleet():
         h["updated"] = stamp
         f.write_text(json.dumps(h, ensure_ascii=False, separators=(",", ":")))
     print(f"Flotte: {sum(1 for t in trips if res.get(t['id']))} Reisen gespeichert", flush=True)
+    dd = d / "dashboard"
+    dd.mkdir(exist_ok=True)
+    df = dd / f"flotte-{today}.json"
+    runs_today = json.loads(df.read_text()) if df.exists() else []
+    summ["sold_value"] = round(summ["sold_value"]); summ["back_value"] = round(summ["back_value"])
+    runs_today.append(summ)
+    df.write_text(json.dumps(runs_today, ensure_ascii=False, separators=(",", ":")))
+    print(f"Flotte: {summ['sold']} Kabinen verschwunden (Wert {summ['sold_value']} €), {summ['back']} zurück", flush=True)
 
 
 def main(force=False, only=None):

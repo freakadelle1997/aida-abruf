@@ -47,7 +47,7 @@ cd "$ROOT"
 mkdir -p logs && cat "$TMPLOG" >> "logs/$(date +%F).log" && : > "$TMPLOG"
 git config user.name "sync"
 git config user.email "sync@users.noreply.github.com"
-for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-history changes fleet logs README.md; do
+for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-history changes fleet dashboard logs README.md; do
     [[ -e "$p" ]] && git add "$p"
 done
 if ! git diff --cached --quiet; then

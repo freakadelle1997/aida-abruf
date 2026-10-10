@@ -226,6 +226,41 @@ def _write_price_histories(con, data, daten, out_dir, tracked):
     return len(hist)
 
 
+def _dashboard(daten):
+    """Tageszahlen des 8-Uhr-Laufs: Katalog (Reisen gesamt, neu, entfallen, Preisänderungen) und
+    die 4-Monats-Reisen (verschwundene/zurückgekehrte Kabinen und ihr Wert)."""
+    days = {}
+    ch = daten / "catalog-history"
+    titles = {}
+    cf = daten / "catalog.json"
+    if cf.exists():
+        titles = {t["id"]: [t.get("title"), t.get("ship"), t.get("start")] for t in json.loads(cf.read_text())["trips"]}
+    for f in sorted(ch.glob("*.json")) if ch.exists() else []:
+        days.setdefault(f.stem, {})["total"] = len(json.loads(f.read_text())["trips"])
+    for f in sorted((daten / "changes").glob("katalog-*.json")) if (daten / "changes").exists() else []:
+        c = json.loads(f.read_text())
+        e = days.setdefault(c["date"], {})
+        e.update(new=len(c["new"]), gone=len(c["gone"]),
+                 up=sum(1 for p in c["price"] if p["new"] > p["old"]),
+                 down=sum(1 for p in c["price"] if p["new"] < p["old"]))
+    for f in sorted((daten / "dashboard").glob("flotte-*.json")) if (daten / "dashboard").exists() else []:
+        runs = json.loads(f.read_text())
+        e = days.setdefault(f.stem[7:], {})
+        e.update(f_trips=runs[-1]["trips"], f_free=runs[-1]["free"],
+                 sold=sum(r["sold"] for r in runs), back=sum(r["back"] for r in runs),
+                 sold_value=sum(r["sold_value"] for r in runs), back_value=sum(r["back_value"] for r in runs))
+        bs, bt = {}, {}
+        for r in runs:
+            for k, v in r["by_ship"].items():
+                a = bs.setdefault(k, [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
+            for k, v in r["by_trip"].items():
+                a = bt.setdefault(k, [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
+        e["by_ship"] = bs
+        e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
+                    for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
+    return [dict(day=k, **v) for k, v in sorted(days.items())]
+
+
 def trip_data(con, journey, focus=None):
     runs = _all_runs(con, journey)
     if not runs:
@@ -543,7 +578,7 @@ def build(con=None):
     build_id = datetime.now().isoformat(timespec="seconds")
     (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
     _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
-    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
+    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "dashboard": _dashboard(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
     OUT.write_text(html)
@@ -810,11 +845,13 @@ tr.cabrow td { background: color-mix(in srgb, var(--s1) 6%, transparent); white-
   <a href="#" data-v="list">Meine Reisen</a>
   <a href="#katalog" data-v="katalog">Katalog</a>
   <a href="#aenderungen" data-v="aend">Änderungen</a>
+  <a href="#dashboard" data-v="dash">Dashboard</a>
 </nav>
 <div id="list"></div>
 <div id="detail"></div>
 <div id="katalog" style="display:none"></div>
 <div id="aend" style="display:none"></div>
+<div id="dash" style="display:none"></div>
 </main>
 <div id="deck3d" class="deck3d" hidden>
   <div class="d3d-bar">
@@ -1566,13 +1603,55 @@ function restoreScroll() {
   } catch {}
 }
 
+// ---------- Dashboard (Tageszahlen des 8-Uhr-Laufs) ----------
+function renderDash() {
+  const root = $("dash"), D = DATA.dashboard || [];
+  if (!D.length) { root.innerHTML = `<p class="mut">Noch keine Tageszahlen – entstehen mit dem täglichen 8-Uhr-Lauf.</p>`; return; }
+  const last = D[D.length - 1], fl = [...D].reverse().find(x => x.sold != null);
+  const n = v => v == null ? "–" : Math.round(v).toLocaleString("de-DE");
+  root.innerHTML = `<p class="kmeta">Tageszahlen aus dem 8-Uhr-Lauf. Verkäufe = Kabinen, die in den Reisen der nächsten 4 Monate seit dem Vortag verschwunden sind (nur Kategorien unter 100 freien Kabinen; Wert = PREMIUM-Preis der Unterkategorie für 2 Personen).</p>
+    <div class="tiles">
+      <div class="tile"><div class="k">Reisen im Katalog</div><div class="v">${n(last.total)}</div><div class="d">Stand ${d(last.day)}</div></div>
+      <div class="tile"><div class="k">Neu / entfallen</div><div class="v">${last.new != null ? "+" + last.new + " / −" + last.gone : "–"}</div><div class="d">gegenüber Vortag</div></div>
+      <div class="tile"><div class="k">Kabinen verkauft</div><div class="v">${fl ? n(fl.sold) : "–"}</div><div class="d">${fl ? `${n(fl.back)} zurück · ${d(fl.day)}` : "ab dem nächsten Tageslauf"}</div></div>
+      <div class="tile"><div class="k">Wert verkauft</div><div class="v">${fl ? eur(fl.sold_value) : "–"}</div><div class="d">${fl && fl.sold ? "Ø " + eur(fl.sold_value / fl.sold) + " je Kabine" : ""}</div></div>
+    </div>
+    <div class="charts">
+      <div class="chart"><h3>Katalog: neue und entfallene Reisen</h3><div class="box"><canvas id="db1"></canvas></div></div>
+      <div class="chart"><h3>Kabinen verkauft und zurück (4-Monats-Reisen)</h3><div class="box"><canvas id="db2"></canvas></div></div>
+      <div class="chart"><h3>Wert der verkauften Kabinen pro Tag</h3><div class="box"><canvas id="db3"></canvas></div></div>
+      <div class="chart"><h3>Katalog: Preise rauf / runter („ab“-Preis)</h3><div class="box"><canvas id="db4"></canvas></div></div>
+    </div>
+    ${fl && fl.top && fl.top.length ? `<div class="sect">Meiste Verkäufe am ${d(fl.day)}</div>
+      <table class="chg">${fl.top.filter(r => r[1] > 0).map(r => `<tr><td>${r[4] || r[0]} <span class="mut">· ${r[5] || ""} · ${r[6] ? d(r[6]) : ""}</span></td><td class="t">${r[1]} verkauft</td><td class="t">${r[2]} zurück</td><td class="t">${eur(r[3])}</td></tr>`).join("")}</table>` : ""}
+    ${fl && fl.by_ship ? `<div class="sect">Nach Schiff am ${d(fl.day)}</div>
+      <table class="chg">${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => `<tr><td>${s}</td><td class="t">${v[0]} verkauft</td><td class="t">${v[1]} zurück</td><td class="t">${eur(v[2])}</td></tr>`).join("")}</table>` : ""}`;
+  const lab = D.map(x => d(x.day).slice(0, 6));
+  const line = (id, sets, fmt) => {
+    const o = {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+      plugins: {legend: {display: sets.length > 1, labels: {color: css("--text-2"), boxWidth: 12}},
+        tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
+      scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}},
+               y: {beginAtZero: true, suggestedMax: 5, grid: {color: css("--grid")},
+                   ticks: {color: css("--text-2"), precision: 0, callback: v => fmt(v)}}},
+      elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}};
+    charts.push(new Chart($(id), {type: "line", data: {labels: lab, datasets: sets.map(([label, key, col]) => ({
+      label, data: D.map(x => x[key] ?? null), borderColor: css(col), backgroundColor: css(col), spanGaps: true}))}, options: o}));
+  };
+  line("db1", [["neu", "new", "--down"], ["entfallen", "gone", "--up"]], n);
+  line("db2", [["verkauft", "sold", "--up"], ["zurück", "back", "--down"]], n);
+  line("db3", [["Wert verkauft", "sold_value", "--s1"]], v => eur(v));
+  line("db4", [["rauf", "up", "--up"], ["runter", "down", "--down"]], n);
+}
+
 function showView(v) {
-  ["list", "detail", "katalog", "aend"].forEach(id => { $(id).style.display = id === v ? "" : "none"; });
+  ["list", "detail", "katalog", "aend", "dash"].forEach(id => { $(id).style.display = id === v ? "" : "none"; });
   document.querySelectorAll(".tabs a").forEach(a => a.classList.toggle("on", a.dataset.v === v || (v === "detail" && a.dataset.v === "list")));
 }
 function route() {
   if (DATA.trips.length) subText();
   if (location.hash === "#katalog") { charts.splice(0).forEach(c => c.destroy()); showView("katalog"); renderKatalog(); return; }
+  if (location.hash === "#dashboard") { charts.splice(0).forEach(c => c.destroy()); showView("dash"); renderDash(); return; }
   if (location.hash === "#aenderungen") { charts.splice(0).forEach(c => c.destroy()); showView("aend"); renderAend(); return; }
   const m = location.hash.match(/t=(\d+)/);
   if (m && DATA.trips[+m[1]]) { showView("detail"); renderDetail(+m[1]); } else { showView("list"); renderList(); }
