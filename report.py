@@ -185,6 +185,8 @@ def _write_price_histories(con, data, daten, out_dir, tracked):
     oder Unterkategorie (IA, IB ...). Quellen: tägliche Katalog-Momentaufnahmen (alle Reisen),
     Unterkategorie-Preise der 4-Monats-Reisen (fleet/) und stündliche Abrufe hinterlegter Reisen."""
     hist = {}   # id -> {zeitpunkt: {gruppe: {tarif: preis}}}
+    free = {}   # id -> {zeitpunkt: {kategorie: freie Kabinen}}
+    meta = {}   # id -> {kategorie: [kabinentyp, name]}
     ch = daten / "catalog-history"
     for f in sorted(ch.glob("*.json")) if ch.exists() else []:
         day = f.stem
@@ -197,10 +199,24 @@ def _write_price_histories(con, data, daten, out_dir, tracked):
             if g:
                 hist.setdefault(jid, {}).setdefault(day, {}).update(g)
     fd = daten / "fleet"
+    cat_trips = {}
+    cf = daten / "catalog.json"
+    if cf.exists():
+        cat_trips = {t["id"]: t for t in json.loads(cf.read_text())["trips"]}
+    subcache = {}
     for f in fd.glob("*.json") if fd.exists() else []:
         h = json.loads(f.read_text())
+        jid = h["journey"]
         for day, cats in (h.get("prices") or {}).items():
-            hist.setdefault(h["journey"], {}).setdefault(day, {}).update(cats)
+            hist.setdefault(jid, {}).setdefault(day, {}).update(cats)
+        for day, cnt in (h.get("counts") or {}).items():
+            free.setdefault(jid, {})[day] = cnt
+        ct = cat_trips.get(jid) or {}
+        kf = daten / "ships" / f"kategorien-{ct.get('ship')}-{ct.get('var')}.json"
+        if kf.exists():
+            if kf not in subcache:
+                subcache[kf] = json.loads(kf.read_text())
+            meta[jid] = {k: [v[0], v[1]] for k, v in subcache[kf].items()}
     for jid in tracked:   # hinterlegte Reisen: jeder Abruf, letzte 30 Tage
         for r in con.execute("SELECT id, fetched_at FROM runs WHERE journey=? AND ok=1 AND fetched_at >= ?"
                              " ORDER BY fetched_at", (jid, (date.today() - timedelta(days=30)).isoformat())):
@@ -208,21 +224,29 @@ def _write_price_histories(con, data, daten, out_dir, tracked):
             for t in con.execute("SELECT cabin_type, tariff, cabin FROM tariffs WHERE run_id=?", (r["id"],)):
                 if t["cabin"]:
                     g.setdefault(t["cabin_type"], {})[TNAME_PY.get(t["tariff"], t["tariff"])] = t["cabin"]
+            fr = {}
             for c in con.execute("SELECT * FROM categories WHERE run_id=?", (r["id"],)):
                 for col, lab in CAT_PRICE_COLS.items():
                     if col in c.keys() and c[col]:
                         g.setdefault(c["code"], {})[lab] = c[col]
+                if not c["guarantee"]:
+                    fr[c["code"]] = c["free"]
+                meta.setdefault(jid, {})[c["code"]] = [c["grp"], c["name"]]
+            free.setdefault(jid, {})[r["fetched_at"][:16]] = fr
             if g:
                 hist.setdefault(jid, {})[r["fetched_at"][:16]] = g
     pdir = out_dir / "prices"
     pdir.mkdir(exist_ok=True)
-    for jid, byx in hist.items():
-        xs = sorted(byx)
+    for jid in set(hist) | set(free):
+        byx, fx = hist.get(jid, {}), free.get(jid, {})
+        xs = sorted(set(byx) | set(fx))
         groups = sorted({g for v in byx.values() for g in v})
-        out = {"x": xs, "g": {}}
+        out = {"x": xs, "g": {}, "f": {}, "c": meta.get(jid, {})}
         for g in groups:
             tarifs = sorted({tf for v in byx.values() for tf in (v.get(g) or {})})
-            out["g"][g] = {tf: [(byx[x].get(g) or {}).get(tf) for x in xs] for tf in tarifs}
+            out["g"][g] = {tf: [(byx.get(x, {}).get(g) or {}).get(tf) for x in xs] for tf in tarifs}
+        for code in sorted({c for v in fx.values() for c in v}):
+            out["f"][code] = [fx[x].get(code, 0) if x in fx else None for x in xs]
         (pdir / f"{jid}.json").write_text(json.dumps(out, separators=(",", ":")))
     return len(hist)
 
@@ -835,6 +859,10 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .logpre { font-size: 12px; line-height: 1.45; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px; max-height: 520px; overflow: auto; white-space: pre-wrap; margin: 10px 0 0; }
 .logerr { color: var(--up); font-weight: 600; }
+.tchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tchip { border: 1.5px solid var(--c); color: var(--text); background: none; border-radius: 14px; padding: 3px 10px;
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; opacity: .55; }
+.tchip.on { background: color-mix(in srgb, var(--c) 22%, transparent); opacity: 1; }
 .kmeta { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 .chg { width: auto; max-width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 22px; }
 .chg td { padding-right: 18px !important; }
@@ -1081,46 +1109,75 @@ function tariffMatrix(tariffs, withFlight = true, opt = {}) {
   }).join("");
   return `<div class="tmxwrap"><table class="tmx"><thead><tr><th>Kabinenart</th>${tarifs.map(x => `<th${x === "PREMIUM ALL IN" ? ' style="color:var(--s1)"' : ""}>${x}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-// Preisverlauf: Auswahl Kabinenart/Unterkategorie, je Tarif eine Linie
+// Einheitliche Diagramme je Reise (hinterlegt und Katalog): Auswahl Kabinentyp -> Kategorie -> Tarife;
+// jede Überschrift nennt genau Typ, Kategorie und Tarif(e).
+const TARIF_ORDER = ["LIGHT", "CLASSIC", "CLASSIC ALL IN", "PREMIUM", "PREMIUM ALL IN", "COMFORT ALL IN"];
+const TARIF_COL = {"LIGHT": "--s5", "CLASSIC": "--s3", "CLASSIC ALL IN": "--s7", "PREMIUM": "--s2", "PREMIUM ALL IN": "--s1", "COMFORT ALL IN": "--s4"};
+const TYPE_NAME = {I: "Innen", M: "Meerblick", B: "Balkon", V: "Veranda", K: "Veranda Komfort", P: "Panorama",
+  D: "Veranda Deluxe", J: "Junior-Suite", S: "Suite", C: "Innen (Komfort)"};
 const PH = {};
-async function priceHistory(el, id, prefer) {
+async function tripCharts(el, id, prefer) {
   if (!el) return;
   try {
     const r = await fetch("prices/" + id + ".json", {cache: "no-cache"});
-    if (!r.ok) { el.innerHTML = `<p class="mut">Noch kein Preisverlauf – entsteht ab dem nächsten Tageslauf (8 Uhr).</p>`; return; }
+    if (!r.ok) { el.innerHTML = `<p class="mut">Noch keine Verlaufsdaten – entstehen ab dem nächsten Tageslauf (8 Uhr).</p>`; return; }
     PH[id] = await r.json();
   } catch { return; }
-  const h = PH[id];
-  const groups = Object.keys(h.g).sort((a, b) => (a.length - b.length) || a.localeCompare(b));
-  const label = g => (g.length === 1 ? (CABIN_TYPES[g] || g) + " (alle)" : g);
-  const sel = groups.includes(prefer) ? prefer : (groups.find(g => g.length === 1) || groups[0]);
-  el.innerHTML = `<div class="filters" style="margin:0 0 8px"><label>Kabinenart / Kategorie<select>${groups.map(g =>
-    `<option value="${g}"${g === sel ? " selected" : ""}>${label(g)}</option>`).join("")}</select></label>
-    <span class="mut" style="font-size:12.5px;align-self:center">${h.x.length} Messpunkte seit ${d(h.x[0].slice(0, 10))}</span></div>
-    <div class="box" style="height:260px"><canvas></canvas></div>`;
-  let ch = null;
-  const draw = g => {
-    if (ch) ch.destroy();
-    const lab = h.x.map(x => d(x.slice(0, 10)).slice(0, 6) + (x.length > 10 ? " " + x.slice(11, 16) : ""));
-    const pal = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
-    const order = ["LIGHT", "CLASSIC", "CLASSIC ALL IN", "PREMIUM", "PREMIUM ALL IN", "COMFORT ALL IN"];
-    const tfs = Object.keys(h.g[g]).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    const o = {responsive: true, maintainAspectRatio: false, animation: false,
+  const h = PH[id], meta = h.c || {};
+  const typeOf = g => g.length === 1 ? g : ((meta[g] || [])[0] || g[0]);
+  const cats = [...new Set([...Object.keys(h.g), ...Object.keys(h.f || {})].filter(g => g.length > 1))];
+  const types = [...new Set([...Object.keys(h.g).filter(g => g.length === 1), ...cats.map(typeOf)])]
+    .sort((a, b) => "IMBVKPDJS".indexOf(a) - "IMBVKPDJS".indexOf(b));
+  const st = {type: prefer ? typeOf(prefer) : (types[0] || "I"), cat: prefer && cats.includes(prefer) ? prefer : "", tarifs: new Set(["PREMIUM ALL IN"])};
+  if (!types.includes(st.type)) st.type = types[0];
+  const catLabel = c => c ? `${c}${meta[c] ? " " + meta[c][1] : ""}` : "alle Kategorien (günstigste)";
+  const lab = h.x.map(x => d(x.slice(0, 10)).slice(0, 6) + (x.length > 10 ? " " + x.slice(11, 16) : ""));
+  let chP = null, chF = null;
+  const render = () => {
+    const catsOfType = cats.filter(c => typeOf(c) === st.type).sort();
+    if (st.cat && !catsOfType.includes(st.cat)) st.cat = "";
+    const key = st.cat || st.type;
+    const avail = TARIF_ORDER.filter(tf => (h.g[key] || {})[tf]);
+    if (![...st.tarifs].some(tf => avail.includes(tf))) st.tarifs = new Set(avail.includes("PREMIUM ALL IN") ? ["PREMIUM ALL IN"] : avail.slice(0, 1));
+    const sel = avail.filter(tf => st.tarifs.has(tf));
+    const freeSeries = st.cat ? (h.f || {})[st.cat]
+      : (catsOfType.some(c => (h.f || {})[c]) ? h.x.map((_, i) => catsOfType.reduce((s, c) => {
+          const v = ((h.f || {})[c] || [])[i]; return v == null ? s : (s ?? 0) + v; }, null)) : null);
+    const title = `${TYPE_NAME[st.type] || st.type} · ${catLabel(st.cat)}`;
+    el.innerHTML = `<div class="filters" style="margin:0 0 6px">
+        <label>Kabinentyp<select data-s="type">${types.map(t => `<option value="${t}"${t === st.type ? " selected" : ""}>${TYPE_NAME[t] || t}</option>`).join("")}</select></label>
+        <label>Kategorie<select data-s="cat"><option value="">alle (günstigste)</option>${catsOfType.map(c => `<option value="${c}"${c === st.cat ? " selected" : ""}>${catLabel(c)}</option>`).join("")}</select></label>
+      </div>
+      <div class="tchips">${avail.map(tf => `<button class="tchip${st.tarifs.has(tf) ? " on" : ""}" data-t="${tf}" style="--c:var(${TARIF_COL[tf] || "--s6"})">${tf}</button>`).join("") || '<span class="mut">keine Preise für diese Auswahl</span>'}</div>
+      <div class="charts" style="margin-top:10px">
+        <div class="chart"><h3>Preis · ${title} · ${sel.join(", ") || "–"}</h3><div class="box"><canvas data-c="p"></canvas></div></div>
+        <div class="chart"><h3>Freie Kabinen · ${title}</h3><div class="box">${freeSeries ? '<canvas data-c="f"></canvas>' : '<p class="mut" style="padding:20px 0">Für diese Reise/Auswahl werden keine freien Kabinen erfasst (nur hinterlegte Reisen und Reisen der nächsten 4 Monate).</p>'}</div></div>
+      </div>
+      <p class="note" style="margin-top:4px">Preis je Kabine für 2 Erwachsene ohne Flug. „alle (günstigste)“ = günstigste Kategorie des Typs; freie Kabinen dann summiert über alle Kategorien des Typs (je Kategorie zeigt AIDA höchstens 100).</p>`;
+    el.querySelector('[data-s="type"]').onchange = e => { st.type = e.target.value; st.cat = ""; render(); };
+    el.querySelector('[data-s="cat"]').onchange = e => { st.cat = e.target.value; render(); };
+    el.querySelectorAll(".tchip").forEach(b => b.onclick = () => {
+      const tf = b.dataset.t; st.tarifs.has(tf) ? st.tarifs.delete(tf) : st.tarifs.add(tf); render(); });
+    const opts = (fmt, zero) => ({responsive: true, maintainAspectRatio: false, animation: false,
       interaction: {mode: "index", intersect: false},
-      plugins: {legend: {display: true, labels: {color: css("--text-2"), boxWidth: 12}},
-        tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${eur(c.parsed.y)}`}}},
-      scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}},
-               y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), callback: v => eur(v)}}},
-      elements: {line: {borderWidth: 2, tension: 0}, point: {radius: h.x.length > 20 ? 0 : 3}}};
-    ch = new Chart(el.querySelector("canvas"), {type: "line", data: {labels: lab, datasets: tfs.map((tf, i) => ({
-      label: tf, data: h.g[g][tf], borderColor: css(tf === "PREMIUM ALL IN" ? "--s1" : pal[(i + 1) % pal.length]),
-      backgroundColor: css(tf === "PREMIUM ALL IN" ? "--s1" : pal[(i + 1) % pal.length]),
-      borderWidth: tf === "PREMIUM ALL IN" ? 3 : 1.5, spanGaps: true, stepped: true}))}, options: o});
-    charts.push(ch);
+      plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
+      scales: {x: {grid: {display: false}, ticks: {color: css("--text-2"), maxTicksLimit: 12}},
+               y: {beginAtZero: zero, grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => fmt(v)}}},
+      elements: {line: {borderWidth: 2, tension: 0}, point: {radius: h.x.length > 24 ? 0 : 3}}});
+    if (chP) chP.destroy(); if (chF) chF.destroy();
+    chP = new Chart(el.querySelector('[data-c="p"]'), {type: "line", data: {labels: lab, datasets: sel.map(tf => ({
+      label: tf, data: h.g[key][tf], borderColor: css(TARIF_COL[tf] || "--s6"), backgroundColor: css(TARIF_COL[tf] || "--s6"),
+      spanGaps: true, stepped: true}))}, options: opts(v => eur(v), false)});
+    charts.push(chP);
+    const fc = el.querySelector('[data-c="f"]');
+    if (fc) { chF = new Chart(fc, {type: "line", data: {labels: lab, datasets: [{label: "frei", data: freeSeries,
+      borderColor: css("--s1"), backgroundColor: css("--s1"), spanGaps: true, stepped: true}]}, options: opts(v => Math.round(v).toLocaleString("de-DE"), true)});
+      charts.push(chF); }
   };
-  el.querySelector("select").addEventListener("change", e => draw(e.target.value));
-  draw(sel);
+  render();
 }
+// alter Name, falls noch irgendwo aufgerufen
+const priceHistory = tripCharts;
 
 // Schiffs-Sticker vor dem Schiffsnamen (sofern vorhanden)
 function shipName(name, size = "") {
@@ -1170,8 +1227,8 @@ function salesBlock(t, ti) {
     </div>
     ${prog ? `<p class="note" style="margin:0 0 14px">${prog}</p>` : ""}
     <div class="charts">
-      <div class="chart"><h3>Bewegungen kumuliert</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
-      <div class="chart"><h3>Netto verkauft seit Beginn</h3><div class="box"><canvas id="sc${ti}"></canvas></div></div>
+      <div class="chart"><h3>Bewegungen kumuliert · ganzes Schiff (Kategorien unter 100)</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
+      <div class="chart"><h3>Netto verkauft seit Beginn · ganzes Schiff${t.focus ? " und " + t.focus.code : ""}</h3><div class="box"><canvas id="sc${ti}"></canvas></div></div>
     </div>
     ${s.by_day.length ? `<table class="chg"><tr><td class="t"><b>Tag</b></td><td><b>verkauft</b></td><td><b>kurz reserviert</b></td></tr>${s.by_day.map(r => `<tr><td class="t">${d(r[0])}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}</table>` : ""}
     <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Links kumuliert: rot = verschwundene, grün = wieder frei gewordene Kabinen seit Beobachtungsbeginn; rechts die Differenz (netto verkauft). „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).</p>`;
@@ -1195,10 +1252,7 @@ function focusBlock(t, ti) {
       <div class="tile"><div class="k">Preis seit Beginn</div><div class="v">${sign(dpAll, " €")}</div>
         <div class="d">seit ${d(first.day)}</div></div>
     </div>
-    <div class="charts" style="margin-bottom:0">
-      <div class="chart"><h3>Freie Kabinen ${t.focus.code}</h3><div class="box"><canvas id="ff${ti}"></canvas></div></div>
-      <div class="chart"><h3>Preis ${t.focus.code} PREMIUM ALL IN</h3><div class="box"><canvas id="fp${ti}"></canvas></div></div>
-    </div>
+    <p class="note" style="margin:6px 0 0">Verlauf von Preis und freien Kabinen: unten bei „Verlauf“ (voreingestellt auf ${t.focus.code}).</p>
   </div>`;
 }
 
@@ -1431,7 +1485,7 @@ function renderDetail(ti) {
       </div>
       ${itinerary(t)}
       ${t.tariffs && t.tariffs.length ? `<div class="sect">Preise je Kabinenart und Tarif</div>${tariffMatrixDetail(t)}<p class="note" style="margin-top:-8px">Kabinenpreis für 2 Erwachsene (günstigste Kabine der Kabinenart${t.focus_prices ? `, in der Zeile ${t.focus_prices.code} der Preis deiner Wunschkategorie ${t.focus_prices.code}; G = CLASSIC-Garantiekabine ohne Kabinenwahl` : ""}). Darunter: inkl. Hin- und Rückflug ab ${FLY_FROM[0]}, sonst ab ${FLY_FROM[1]}; F&amp;F = Family &amp; Friends (−10 % auf den Reisepreis, −7 % auf den Flug). Grün = günstigster Tarif je Kabinenart.</p>` : ""}
-      <div class="sect">Preisverlauf je Tarif</div><div id="ph${ti}"></div>
+      <div class="sect">Verlauf · Preis und freie Kabinen</div><div id="ph${ti}"></div>
       ${changesBlock(t)}
       ${focusBlock(t, ti)}
       ${salesBlock(t, ti)}
@@ -1447,12 +1501,7 @@ function renderDetail(ti) {
         <div class="tile"><div class="k">Seit Beobachtungsbeginn</div><div class="v">${sign(t.free_total - t.first_free, "", true)}</div>
           <div class="d">seit ${d(t.first_day)}</div></div>
       </div>
-      <div class="chart" style="margin-bottom:18px"><h3>Freie Kabinen gesamt</h3><div class="box"><canvas id="ct${ti}"></canvas></div></div>`}
-      <div class="charts">
-        <div class="chart"><h3>Freie Kabinen je Kabinentyp</h3><div class="box"><canvas id="cf${ti}"></canvas></div></div>
-        <div class="chart"><h3>Günstigster Kabinenpreis PREMIUM ALL IN je Typ</h3><div class="box"><canvas id="cp${ti}"></canvas></div></div>
-      </div>
-      <div class="legend">${used.map(g => `<span style="--c:var(${g.color})">${g.name}</span>`).join("")}</div>
+      <div class="chart" style="margin-bottom:18px"><h3>Freie Kabinen gesamt · ganzes Schiff (alle Typen und Kategorien)</h3><div class="box"><canvas id="ct${ti}"></canvas></div></div>`}
       <div class="tbl" style="margin-top:22px"><h3>Unterkategorien heute</h3>
         <table><thead><tr><th>Kat.</th><th>Typ</th><th>Bezeichnung</th><th>frei</th><th>Δ zuletzt</th><th>Δ 7 Tage</th>
           <th>ALL IN</th><th>Δ</th><th>PREMIUM</th><th>CLASSIC</th><th>Δ</th><th>LIGHT</th></tr></thead>
@@ -1494,19 +1543,7 @@ function renderDetail(ti) {
   if ($("ct" + ti)) charts.push(new Chart($("ct" + ti), {type: "line", data: {labels, datasets: [{label: "Frei gesamt",
     borderColor: css("--s1"), backgroundColor: css("--s1"), data: t.series.map(s => s.free_total), spanGaps: true}]},
     options: base(intFmt)}));
-  const ds = key => used.map(g => ({label: g.name, borderColor: css(g.color), backgroundColor: css(g.color),
-    data: t.series.map(s => key === "free" ? (s.free[g.key] || 0) : (s.allin[g.key] ?? null)), spanGaps: true}));
-  charts.push(new Chart($("cf" + ti), {type: "line",
-    data: {labels, datasets: ds("free")}, options: base(intFmt)}));
-  if (t.focus) {
-    const one = (id, label, key, fmt, color) => {
-      const o = base(fmt); o.scales.y.beginAtZero = key === "focus_free";
-      charts.push(new Chart($(id), {type: "line", data: {labels, datasets: [{label,
-        borderColor: css(color), backgroundColor: css(color), data: t.series.map(s => s[key] ?? null), spanGaps: true}]}, options: o}));
-    };
-    one("ff" + ti, "frei", "focus_free", v => Math.round(v).toLocaleString("de-DE"), "--s1");
-    one("fp" + ti, "PREMIUM ALL IN", "focus_allin", v => eur(v), "--s1");
-  }
+
   if (t.sales && $("sr" + ti)) {
     const sl = t.sales.per_run.map(r => d(r.ts.slice(0, 10)).slice(0, 6) + " " + r.ts.slice(11, 16));
     const ob = base(v => Math.round(v).toLocaleString("de-DE"));
@@ -1524,10 +1561,6 @@ function renderDetail(ti) {
     if (t.focus && !t.sales.focus_capped) dsc.push({label: t.focus.code, data: t.sales.cum_f, borderColor: css("--s4"), backgroundColor: css("--s4"), stepped: true});
     charts.push(new Chart($("sc" + ti), {type: "line", data: {labels: sl, datasets: dsc}, options: oc}));
   }
-  const po = base(v => eur(v));
-  po.scales.y.beginAtZero = false;
-  charts.push(new Chart($("cp" + ti), {type: "line",
-    data: {labels, datasets: ds("premium").filter(x => x.data.some(v => v != null))}, options: po}));
 }
 
 // ---------- Katalog (wöchentlich, ~2.000 Reisen) ----------
@@ -1620,7 +1653,7 @@ function toggleK(id) {
       <p class="kmeta">${Object.entries(t.fleet.cats).sort().map(([k, v]) => `<b>${k}</b> ${v}${v >= 100 ? "+" : ""}`).join(" · ")}
       ${t.fleet.prev != null ? `<br>Seit dem Vortag: ${t.fleet.plus} Kabinen neu frei, ${t.fleet.minus} weg` : ""}</p>` : ""}
     ${tariffMatrix(t.tariffs)}
-    <div class="sect">Preisverlauf je Tarif</div><div id="kph_${id}"></div>
+    <div class="sect">Verlauf · Preis und freie Kabinen</div><div id="kph_${id}"></div>
     <a href="${tripUrl(id)}" target="_blank" rel="noopener">Bei AIDA ansehen ↗</a>`;
   const it = (t.itinerary || []).map((p, i) => Object.assign({day: i + 1}, p));
   drawRoute($("km_" + id), it, KPORTS);
