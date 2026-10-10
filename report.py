@@ -576,10 +576,22 @@ def build(con=None):
                 p.update(title=b.get("title"), ship=b.get("ship"), start=b.get("start"))
                 p.setdefault("nt", b.get("from_tariff"))
     (OUT.parent / "tracked.json").write_text(json.dumps(list(focus) or journeys))
+    # Schiffs-Sticker (daten/ships-img/<code>.png) neben die Seite
+    ship_imgs = {}
+    sid = daten / "ships-img"
+    if sid.exists():
+        import shutil
+        (OUT.parent / "ships").mkdir(exist_ok=True)
+        sj = daten / "decks" / "ships.json"
+        names = {c: v["name"] for c, v in json.loads(sj.read_text()).items()} if sj.exists() else {}
+        for f in sid.glob("*.png"):
+            shutil.copy(f, OUT.parent / "ships" / f.name)
+            if f.stem in names:
+                ship_imgs[names[f.stem]] = f"ships/{f.name}?v={f.stat().st_size}"
     build_id = datetime.now().isoformat(timespec="seconds")
     (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
     _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
-    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "dashboard": _dashboard(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
+    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "ship_imgs": ship_imgs, "dashboard": _dashboard(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
     OUT.write_text(html)
@@ -763,6 +775,9 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .pctop { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px; cursor: pointer; font-size: 14px; flex-wrap: wrap; }
 .pctop:hover { background: color-mix(in srgb, var(--s1) 6%, transparent); }
 .pcmore { padding: 0 2px 10px; }
+.shipn { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.shipst { height: 20px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,.15)); }
+.shipst.big { height: 30px; }
 .kmeta { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 .chg { width: auto; max-width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 22px; }
 .chg td { padding-right: 18px !important; }
@@ -1044,6 +1059,12 @@ async function priceHistory(el, id, prefer) {
   draw(sel);
 }
 
+// Schiffs-Sticker vor dem Schiffsnamen (sofern vorhanden)
+function shipName(name, size = "") {
+  const src = (DATA.ship_imgs || {})[name];
+  return src ? `<span class="shipn"><img class="shipst ${size}" src="${src}" alt="" loading="lazy">${name}</span>` : (name || "");
+}
+
 function changeText(e) {
   if (e.kind === "Preis") return `${e.tariff} ${eur(e.old)} → ${eur(e.new)} <span class="${e.new > e.old ? "up" : "down"}">(${e.new > e.old ? "+" : ""}${eur(e.new - e.old)})</span>`;
   if (e.kind === "Nachschub") return `Nachschub +${e.val} Kabinen`;
@@ -1174,7 +1195,7 @@ function tripCard(t, ti) {
     <span class="rm" role="button" title="Reise entfernen" aria-label="Reise entfernen"
       onclick="event.stopPropagation(); removeTrip('${t.journey}')">✕</span>
     <h2>${t.title}</h2>
-    <div class="meta">${t.ship} · ${d(t.start)} bis ${d(t.end)} ab ${t.from}</div>
+    <div class="meta">${shipName(t.ship, "big")} · ${d(t.start)} bis ${d(t.end)} ab ${t.from}</div>
     ${fb}
     ${t.focus ? `<div class="cstat"><span class="k">${t.focus.group} (${t.focus.code}) ALL IN</span>
       <span class="v">${eur(now.focus_allin)} ${dPrice}</span></div>` : ""}
@@ -1335,7 +1356,7 @@ function renderDetail(ti) {
     <button class="rmbtn" onclick="removeTrip('${t.journey}')">Reise entfernen</button>
     <section class="trip">
       <h2>${t.title}</h2>
-      <div class="meta">${t.ship} · ${d(t.start)} bis ${d(t.end)} ab ${t.from} · Reise ${t.journey} · 2 Erwachsene · Stand ${d(t.fetched_at.slice(0,10))} ${t.fetched_at.slice(11,16)}</div>
+      <div class="meta">${shipName(t.ship, "big")} · ${d(t.start)} bis ${d(t.end)} ab ${t.from} · Reise ${t.journey} · 2 Erwachsene · Stand ${d(t.fetched_at.slice(0,10))} ${t.fetched_at.slice(11,16)}</div>
       ${t.error ? `<div class="err">Letzter Abruf am ${d(t.error.fetched_at.slice(0,10))} fehlgeschlagen: ${t.error.error}</div>` : ""}
       ${t.offer ? `<div class="offer">${t.offer.from_pp ? `<span><span class="from">ab ${eur(t.offer.from_pp)}</span> p. P. (${({IND: "PREMIUM", INDAI: "PREMIUM ALL IN", CLA: "CLASSIC", LIG: "LIGHT", COMAI: "COMFORT ALL IN"})[t.offer.from_tariff] || t.offer.from_tariff})</span>` : ""}
         ${(t.offer.amenities || []).map(a => `<span class="mut">${a}</span>`).join("")}</div>
@@ -1509,7 +1530,7 @@ function drawKList() {
     return `<div class="krow" id="kr_${t.id}">
       <div class="top" onclick="toggleK('${t.id}')">
         <h3>${t.title}</h3>
-        <span class="m">${t.ship} · ${d(t.start)} – ${d(t.end)} · ${t.nights} Nächte${t.region ? " · " + t.region : ""}${t.flight ? " · inkl. Flug" : ""}</span>
+        <span class="m">${shipName(t.ship)} · ${d(t.start)} – ${d(t.end)} · ${t.nights} Nächte${t.region ? " · " + t.region : ""}${t.flight ? " · inkl. Flug" : ""}</span>
         ${t.fleet && t.fleet.choice === false ? `<span class="m">Kabine wird zugeteilt</span>` : ""}
         ${t.fleet && t.fleet.choice !== false ? `<span class="m" title="freie Kabinen laut AIDA (je Kategorie max. 100 angezeigt), Stand ${d(t.fleet.date)}"><b>${t.fleet.free.toLocaleString("de-DE")}${t.fleet.capped.length ? "+" : ""} frei</b>${t.fleet.prev != null ? ` (${t.fleet.free - t.fleet.prev >= 0 ? "+" : ""}${t.fleet.free - t.fleet.prev})` : ""}</span>` : ""}
         <span class="p">${t.from_pp ? "ab " + eur(t.from_pp) + " p. P." : ""}</span>
@@ -1558,7 +1579,7 @@ function priceChangeCards(cc) {
   return Object.entries(by).sort((a, b) => b[1].length - a[1].length).map(([ship, list]) => {
     const up = list.filter(p => p.new > p.old).length, down = list.length - up;
     return `<div class="krow"><div class="top" onclick="this.parentNode.querySelector('.more').hidden ^= 1">
-        <h3>${ship}</h3><span class="m">${list.length} Änderungen · <span class="up">${up} rauf</span> · <span class="down">${down} runter</span></span></div>
+        <h3>${shipName(ship, "big")}</h3><span class="m">${list.length} Änderungen · <span class="up">${up} rauf</span> · <span class="down">${down} runter</span></span></div>
       <div class="more" hidden>${list.sort((a, b) => (a.new - a.old) - (b.new - b.old)).map(p => `
         <div class="pcrow" id="pc_${p.id}">
           <div class="pctop" onclick="togglePC('${p.id}')"><span>${p.title || p.id} <span class="mut">· ${p.start ? d(p.start) : ""}</span></span>
@@ -1602,7 +1623,7 @@ function renderAend() {
   DATA.trips.forEach((t, ti) => (t.changes || []).forEach(e => ev.push(Object.assign({ti, title: t.title, ship: t.ship, start: t.start}, e))));
   ev.sort((a, b) => a.ts < b.ts ? 1 : -1);
   const cc = DATA.catalog_changes;
-  const trip = r => `${r.title || r.id} <span class="mut">· ${r.ship || ""} · ${r.start ? d(r.start) : ""}</span>`;
+  const trip = r => `${r.title || r.id} <span class="mut">· ${shipName(r.ship || "")} · ${r.start ? d(r.start) : ""}</span>`;
   root.innerHTML = `<div class="sect">Hinterlegte Reisen (letzte 14 Tage)</div>` + (ev.length
     ? `<table class="chg">${ev.slice(0, 150).map(e => `<tr><td class="t">${d(e.ts.slice(0, 10)).slice(0, 6)} ${e.ts.slice(11, 16)}</td>
         <td><a href="#t=${e.ti}">${e.title}</a> <span class="mut">${d(e.start)}</span></td><td><b>${e.code}</b></td><td>${changeText(e)}</td></tr>`).join("")}</table>`
@@ -1675,7 +1696,7 @@ function renderDash() {
     ${fl && fl.top && fl.top.length ? `<div class="sect">Meiste Verkäufe am ${d(fl.day)}</div>
       <table class="chg">${fl.top.filter(r => r[1] > 0).map(r => `<tr><td>${r[4] || r[0]} <span class="mut">· ${r[5] || ""} · ${r[6] ? d(r[6]) : ""}</span></td><td class="t">${r[1]} verkauft</td><td class="t">${r[2]} zurück</td><td class="t">${eur(r[3])}</td></tr>`).join("")}</table>` : ""}
     ${fl && fl.by_ship ? `<div class="sect">Nach Schiff am ${d(fl.day)}</div>
-      <table class="chg">${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => `<tr><td>${s}</td><td class="t">${v[0]} verkauft</td><td class="t">${v[1]} zurück</td><td class="t">${eur(v[2])}</td></tr>`).join("")}</table>` : ""}`;
+      <table class="chg">${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => `<tr><td>${shipName(s)}</td><td class="t">${v[0]} verkauft</td><td class="t">${v[1]} zurück</td><td class="t">${eur(v[2])}</td></tr>`).join("")}</table>` : ""}`;
   const lab = D.map(x => d(x.day).slice(0, 6));
   const line = (id, sets, fmt) => {
     const o = {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},

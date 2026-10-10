@@ -9,7 +9,8 @@ on:
         description: "trips | daily | weekly | catalog | fleet | deploy"
         default: trips
 concurrency:
-  group: sync
+  # Veröffentlichungs-Läufe (mode=deploy) in eigener Warteschlange, damit sie keine Abrufe verdrängen
+  group: sync-${{ inputs.mode == 'deploy' && 'deploy' || 'main' }}
   cancel-in-progress: false
 permissions:
   contents: write
