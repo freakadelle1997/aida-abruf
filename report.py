@@ -2,7 +2,7 @@
 import hashlib
 import json
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import store
@@ -107,6 +107,72 @@ def _changes(con, runs, days=14):
     return out[::-1]
 
 
+CAP = 100   # AIDA zeigt je Kategorie höchstens 100 freie Kabinen
+
+
+def _sales(con, runs, focus=None):
+    """Verkäufe aus den Kabinenlisten aufeinanderfolgender Abrufe.
+    Gezählt wird nur in Kategorien unter der 100er-Grenze (darüber verschiebt sich nur das
+    sichtbare Fenster). Kabinen, die verschwinden und später wiederkommen, gelten als
+    kurzzeitig reserviert, nicht als verkauft."""
+    if len(runs) < 2:
+        return None
+    sets, caps = [], []
+    for r in runs:
+        cats = _cats(con, r["id"])
+        caps.append({k for k, c in cats.items() if c["free"] >= CAP})
+        sets.append(_cabin_set(con, r["id"]))
+    per_run, gone_at = [], {}          # Kabine -> Abruf-Index, an dem sie verschwand
+    gone_cap = {}                       # dasselbe für gedeckelte Kategorien (nur Untergrenze)
+    held = set()                        # verschwunden und später wieder aufgetaucht
+    for i in range(1, len(runs)):
+        a, b = sets[i - 1], sets[i]
+        capped = caps[i - 1] | caps[i]
+        gone = {x for x in a - b if x[0] not in capped}
+        back = {x for x in b - a if x[0] not in capped}
+        for x in gone:
+            gone_at[x] = i
+        for x in (a - b) - gone:
+            gone_cap[x] = i
+        for x in (b - a) - back:
+            gone_cap.pop(x, None)
+        for x in back:
+            if x in gone_at:
+                held.add((x, gone_at.pop(x)))
+        per_run.append({"ts": runs[i]["fetched_at"][:16], "gone": len(gone), "back": len(back),
+                        "gone_f": sum(1 for x in gone if x[0] == focus),
+                        "back_f": sum(1 for x in back if x[0] == focus),
+                        "capped_moves": len({x for x in (a ^ b) if x[0] in capped})})
+    sold = set(gone_at)                 # verschwunden und (bisher) nicht zurück
+    held_runs = {j for _, j in held}
+    # kumuliert netto verkauft je Abruf (nur endgültig verschwundene Kabinen)
+    cum, cum_f, c, cf = [], [], 0, 0
+    for i in range(1, len(runs)):
+        c += sum(1 for x, j in gone_at.items() if j == i)
+        cf += sum(1 for x, j in gone_at.items() if j == i and x[0] == focus)
+        cum.append(c); cum_f.append(cf)
+    t0 = datetime.fromisoformat(runs[0]["fetched_at"])
+    t1 = datetime.fromisoformat(runs[-1]["fetched_at"])
+    days = max((t1 - t0).total_seconds() / 86400, 1 / 24)
+    by_day = {}
+    for x, j in gone_at.items():
+        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0])[0] += 1
+    for x, j in held:
+        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0])[1] += 1
+    fcur = _cats(con, runs[-1]["id"]).get(focus) if focus else None
+    rate_f = sum(1 for x in sold if x[0] == focus) / days if focus else None
+    return {"per_run": per_run, "cum": cum, "cum_f": cum_f, "sold": len(sold),
+            "sold_f": sum(1 for x in sold if x[0] == focus) if focus else None,
+            "held": len(held), "days": round(days, 2), "rate": round(len(sold) / days, 1),
+            "rate_f": round(rate_f, 2) if rate_f is not None else None,
+            "focus_free": fcur["free"] if fcur else None,
+            "focus_capped": bool(fcur and fcur["free"] >= CAP),
+            # gedeckelte Wunschkategorie: aus dem sichtbaren 100er-Fenster verschwunden, nicht zurück
+            "sold_f_min": sum(1 for x in gone_cap if x[0] == focus) if focus else None,
+            "by_day": sorted(([k, v[0], v[1]] for k, v in by_day.items()), reverse=True),
+            "capped_cats": sorted(caps[-1])}
+
+
 def trip_data(con, journey, focus=None):
     runs = _all_runs(con, journey)
     if not runs:
@@ -202,6 +268,7 @@ def trip_data(con, journey, focus=None):
         "cabin_info": cabin_info,
         "offer": json.loads(latest["offer"]) if "offer" in latest.keys() and latest["offer"] else None,
         "refills": _refills(con, runs),
+        "sales": _sales(con, runs, focus),
         "changes": _changes(con, runs),
         "tariffs": [dict(t, flights=json.loads(t["flights"]) if t["flights"] else None) for t in con.execute(
             "SELECT cabin_type, tariff, cabin, flight, flight_from, rabat, notes, campaigns, flights FROM tariffs"
@@ -857,6 +924,36 @@ function refillBlock(t) {
     : `<p class="refills mut">Kein Nachschub: keine Kategorie ist um 5 oder mehr freie Kabinen gestiegen.</p>`);
 }
 
+function salesBlock(t, ti) {
+  const s = t.sales;
+  if (!s || t.cabin_choice === false) return "";
+  const fc = t.focus ? t.focus.code : null;
+  let prog = "";
+  if (fc) {
+    if (s.focus_capped) prog = `${fc} liegt bei 100+ freien Kabinen – AIDA zeigt nur 100. Aus dem sichtbaren Fenster sind mindestens ${s.sold_f_min || 0} ${fc}-Kabinen verkauft worden; das genaue Tempo wird messbar, sobald weniger als 100 frei sind. Bis dahin ist ${fc} nicht knapp.`;
+    else if (s.rate_f > 0 && s.focus_free != null) prog = `Bei diesem Tempo (${String(s.rate_f).replace(".", ",")} ${fc}-Kabinen/Tag) wäre ${fc} in etwa <b>${Math.round(s.focus_free / s.rate_f)} Tagen</b> ausverkauft (${s.focus_free} frei).`;
+    else if (s.focus_free != null) prog = `In ${fc} wurde seit Beobachtungsbeginn keine Kabine verkauft (${s.focus_free} frei).`;
+  }
+  return `<div class="sect">Verkäufe</div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Netto verkauft</div><div class="v">${s.sold}</div>
+        <div class="d">seit ${s.days < 1 ? Math.round(s.days * 24) + " Std." : String(s.days).replace(".", ",") + " Tagen"}</div></div>
+      <div class="tile"><div class="k">Tempo</div><div class="v">${String(s.rate).replace(".", ",")}</div>
+        <div class="d">Kabinen pro Tag (ganzes Schiff)</div></div>
+      ${fc ? `<div class="tile"><div class="k">Verkauft ${fc}</div><div class="v">${s.focus_capped ? "mind. " + (s.sold_f_min || 0) : s.sold_f}</div>
+        <div class="d">${s.focus_capped ? "über 100 frei – nur sichtbares Fenster" : "deine Kategorie"}</div></div>` : ""}
+      <div class="tile"><div class="k">Kurz reserviert</div><div class="v">${s.held}</div>
+        <div class="d">verschwunden und zurückgekommen</div></div>
+    </div>
+    ${prog ? `<p class="note" style="margin:0 0 14px">${prog}</p>` : ""}
+    <div class="charts">
+      <div class="chart"><h3>Bewegungen je Abruf</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
+      <div class="chart"><h3>Netto verkauft seit Beginn</h3><div class="box"><canvas id="sc${ti}"></canvas></div></div>
+    </div>
+    ${s.by_day.length ? `<table class="chg"><tr><td class="t"><b>Tag</b></td><td><b>verkauft</b></td><td><b>kurz reserviert</b></td></tr>${s.by_day.map(r => `<tr><td class="t">${d(r[0])}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}</table>` : ""}
+    <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Rot = verschwunden, grün = wieder frei. „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).</p>`;
+}
+
 function focusBlock(t, ti) {
   if (!t.focus) return "";
   const s = t.series, n = s.length, last = s[n - 1], prev = n > 1 ? s[n - 2] : null, first = s.find(x => x.focus_allin != null) || s[0];
@@ -1113,6 +1210,7 @@ function renderDetail(ti) {
       ${t.tariffs && t.tariffs.length ? `<div class="sect">Preise je Kabinenart und Tarif</div>${tariffMatrixDetail(t)}<p class="note" style="margin-top:-8px">Kabinenpreis für 2 Erwachsene (günstigste Kabine der Kabinenart${t.focus_prices ? `, in der Zeile ${t.focus_prices.code} der Preis deiner Wunschkategorie ${t.focus_prices.code}; G = CLASSIC-Garantiekabine ohne Kabinenwahl` : ""}). Darunter: inkl. Hin- und Rückflug ab ${FLY_FROM[0]}, sonst ab ${FLY_FROM[1]}; F&amp;F = Family &amp; Friends (−10 % auf den Reisepreis, −7 % auf den Flug). Grün = günstigster Tarif je Kabinenart.</p>` : ""}
       ${changesBlock(t)}
       ${focusBlock(t, ti)}
+      ${salesBlock(t, ti)}
       <div class="sect">Ganzes Schiff</div>
       ${t.cabin_choice === false ? `<p class="mut" style="margin:0 0 22px">Für diese Reise gibt AIDA keine Kabinenliste heraus (Kabine wird bei der Buchung zugeteilt) – freie Kabinen und Belegung sind deshalb nicht bekannt, nur die Preise.</p>` : `
       <div class="tiles">
@@ -1183,6 +1281,21 @@ function renderDetail(ti) {
     };
     one("ff" + ti, "frei", "focus_free", v => Math.round(v).toLocaleString("de-DE"), "--s1");
     one("fp" + ti, "PREMIUM ALL IN", "focus_allin", v => eur(v), "--s1");
+  }
+  if (t.sales && $("sr" + ti)) {
+    const sl = t.sales.per_run.map(r => d(r.ts.slice(0, 10)).slice(0, 6) + " " + r.ts.slice(11, 16));
+    const ob = base(v => Math.round(v).toLocaleString("de-DE"));
+    ob.scales.x.stacked = true; ob.scales.y.stacked = true;
+    ob.plugins.legend = {display: true, labels: {color: css("--text-2"), boxWidth: 12}};
+    charts.push(new Chart($("sr" + ti), {type: "bar", data: {labels: sl, datasets: [
+      {label: "verschwunden", data: t.sales.per_run.map(r => -r.gone), backgroundColor: css("--up")},
+      {label: "wieder frei", data: t.sales.per_run.map(r => r.back), backgroundColor: css("--down")}]}, options: ob}));
+    const oc = base(v => Math.round(v).toLocaleString("de-DE"));
+    oc.scales.y.beginAtZero = true;
+    oc.plugins.legend = {display: true, labels: {color: css("--text-2"), boxWidth: 12}};
+    const dsc = [{label: "ganzes Schiff", data: t.sales.cum, borderColor: css("--s1"), backgroundColor: css("--s1"), stepped: true}];
+    if (t.focus && !t.sales.focus_capped) dsc.push({label: t.focus.code, data: t.sales.cum_f, borderColor: css("--s4"), backgroundColor: css("--s4"), stepped: true});
+    charts.push(new Chart($("sc" + ti), {type: "line", data: {labels: sl, datasets: dsc}, options: oc}));
   }
   const po = base(v => eur(v));
   po.scales.y.beginAtZero = false;
