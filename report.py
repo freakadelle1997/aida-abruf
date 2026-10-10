@@ -1527,7 +1527,7 @@ function renderAend() {
       ${cc.gone.length ? `<h3 style="font-size:15px">Entfallen (ausgebucht oder abgesagt)</h3><table class="chg">${cc.gone.map(r => `<tr><td>${r.id}</td></tr>`).join("")}</table>` : ""}`);
 }
 
-// Selbst aktualisieren: jede Minute prüfen, ob ein neuer Datenstand veröffentlicht wurde, dann
+// Selbst aktualisieren: rund um die Abrufe prüfen, ob ein neuer Datenstand veröffentlicht wurde, dann
 // neu laden (Ansicht und Scrollposition bleiben). Nicht, solange 3D-Plan oder Dialog offen sind.
 let pendingReload = false;
 function busy() {
@@ -1550,7 +1550,15 @@ async function checkVersion() {
     }
   } catch {}
 }
-setInterval(checkVersion, 60000);
+// Nur rund um die Abrufe fragen: alle 10 s von hh:59:45 bis hh:05:00 (8–20 Uhr);
+// der 8-Uhr-Lauf (Katalog + 4-Monats-Reisen) dauert länger -> 7:59:45 bis 8:45.
+function inWindow(now = new Date()) {
+  const h = now.getHours(), m = now.getMinutes(), s = now.getSeconds();
+  if (m === 59 && s >= 45) return h >= 7 && h <= 19;          // kurz vor dem nächsten Lauf
+  if (h === 8) return m < 45;
+  return h >= 9 && h <= 20 && m < 5;
+}
+setInterval(() => { if (inWindow() || (pendingReload && !busy())) checkVersion(); }, 10000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkVersion(); });
 function restoreScroll() {
   try {
