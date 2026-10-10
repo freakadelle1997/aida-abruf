@@ -12,8 +12,8 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-SUMMER = "0 6-18 * * *"   # MESZ (UTC+2)
-WINTER = "0 7-19 * * *"   # MEZ  (UTC+1)
+SUMMER = "7 6-18 * * *"   # MESZ (UTC+2); Minute 7 statt 0, volle Stunden verwirft GitHub unter Last
+WINTER = "7 7-19 * * *"   # MEZ  (UTC+1)
 
 event, cron, manual = (sys.argv[1:] + ["", "", ""])[:3]
 now = datetime.now(ZoneInfo("Europe/Berlin"))
