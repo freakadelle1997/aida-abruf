@@ -1,6 +1,7 @@
 """Baut uebersicht.html aus data/aida.db: Verlauf freier Kabinen und Preise je Reise."""
 import hashlib
 import json
+import re
 import urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -259,6 +260,40 @@ def _dashboard(daten):
         e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
                     for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
     return [dict(day=k, **v) for k, v in sorted(days.items())]
+
+
+LOG_ERR = re.compile(r"Traceback|Error|Fehler|fehlgeschlagen|nicht möglich|abgebrochen|HTTP [45]\d\d")
+
+
+def _write_logs(daten, out_dir, days=7):
+    """Protokolle der letzten Tage (daten/logs/<datum>.log) als logs.json neben die Seite:
+    je Lauf Start, Modus, Ende/Abbruch, Fehlerzeilen und alle Zeilen."""
+    ld = daten / "logs"
+    runs = []
+    for f in sorted(ld.glob("*.log"))[-days:] if ld.exists() else []:
+        cur = None
+        for line in f.read_text(errors="replace").splitlines():
+            m = re.match(r"=== (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) Modus (\S+) ===", line)
+            if m:
+                cur = {"start": m.group(1), "mode": m.group(2), "end": None, "status": "läuft", "errors": 0, "lines": []}
+                runs.append(cur)
+                continue
+            if cur is None:
+                continue
+            m = re.match(r"=== (Ende|Abbruch) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", line)
+            if m:
+                cur["end"] = m.group(2)
+                cur["status"] = "abgebrochen" if m.group(1) == "Abbruch" else ("Fehler" if cur["errors"] else "ok")
+                continue
+            if LOG_ERR.search(line):
+                cur["errors"] += 1
+            cur["lines"].append(line[:400])
+    for r in runs:              # ohne Ende-Marke (ältere Läufe): Status nur nach Fehlerzeilen
+        if r["end"] is None:
+            r["status"] = "Fehler" if r["errors"] else "ok"
+        r["lines"] = r["lines"][-1500:]
+    runs = [r for r in runs if r["mode"] != "deploy" or r["errors"]]   # reine Veröffentlichungen nur bei Fehlern
+    (out_dir / "logs.json").write_text(json.dumps(runs[::-1][:150], ensure_ascii=False, separators=(",", ":")))
 
 
 def trip_data(con, journey, focus=None):
@@ -591,6 +626,7 @@ def build(con=None):
     build_id = datetime.now().isoformat(timespec="seconds")
     (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
     _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
+    _write_logs(daten, OUT.parent)
     html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "ship_imgs": ship_imgs, "dashboard": _dashboard(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
@@ -788,6 +824,9 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .shipn { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
 .shipst { height: 20px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,.15)); }
 .shipst.big { height: 30px; }
+.logpre { font-size: 12px; line-height: 1.45; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; max-height: 520px; overflow: auto; white-space: pre-wrap; margin: 10px 0 0; }
+.logerr { color: var(--up); font-weight: 600; }
 .kmeta { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 .chg { width: auto; max-width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 22px; }
 .chg td { padding-right: 18px !important; }
@@ -880,12 +919,14 @@ tr.cabrow td { background: color-mix(in srgb, var(--s1) 6%, transparent); white-
   <a href="#katalog" data-v="katalog">Katalog</a>
   <a href="#aenderungen" data-v="aend">Änderungen</a>
   <a href="#dashboard" data-v="dash">Dashboard</a>
+  <a href="#protokoll" data-v="logv">Protokoll</a>
 </nav>
 <div id="list"></div>
 <div id="detail"></div>
 <div id="katalog" style="display:none"></div>
 <div id="aend" style="display:none"></div>
 <div id="dash" style="display:none"></div>
+<div id="logv" style="display:none"></div>
 </main>
 <div id="deck3d" class="deck3d" hidden>
   <div class="d3d-bar">
@@ -1769,13 +1810,34 @@ function renderDash() {
   line("db4", [["rauf", "up", "--up"], ["runter", "down", "--down"]], n);
 }
 
+// ---------- Protokoll der Läufe ----------
+async function renderLogs() {
+  const root = $("logv");
+  root.innerHTML = `<p class="mut">Protokoll wird geladen …</p>`;
+  let runs = [];
+  try { runs = await (await fetch("logs.json?v=" + DATA.build, {cache: "no-cache"})).json(); } catch {}
+  if (!runs.length) { root.innerHTML = `<p class="mut">Noch keine Protokolle.</p>`; return; }
+  const MODE = {trips: "Hinterlegte Reisen", daily: "Tageslauf", weekly: "Wochenlauf", catalog: "Katalog", fleet: "4-Monats-Reisen", deploy: "Veröffentlichung"};
+  const dur = r => r.end ? Math.max(1, Math.round((new Date(r.end.replace(" ", "T")) - new Date(r.start.replace(" ", "T"))) / 60e3)) + " Min." : "–";
+  const badge = s => `<span class="chip ${s === "ok" ? "" : s === "läuft" ? "camp" : "refill"}" style="${s === "ok" ? "background:color-mix(in srgb,var(--down) 18%,transparent);color:var(--down)" : s === "läuft" ? "" : "background:color-mix(in srgb,var(--up) 18%,transparent);color:var(--up)"}">${s}</span>`;
+  const err = l => /Traceback|Error|Fehler|fehlgeschlagen|nicht möglich|abgebrochen|HTTP [45]\d\d/.test(l);
+  const esc = t => t.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]);
+  root.innerHTML = `<p class="kmeta">Alle Läufe der letzten 7 Tage (Ausgabe der GitHub-Läufe, privat gespeichert). Rot markiert = mögliche Fehler.</p>` +
+    runs.map((r, i) => `<div class="krow"><div class="top" onclick="this.parentNode.querySelector('.more').hidden ^= 1">
+      <h3 style="flex:0 0 auto">${d(r.start.slice(0, 10)).slice(0, 6)} ${r.start.slice(11, 16)}</h3>
+      <span class="m">${MODE[r.mode] || r.mode} · ${dur(r)}${r.errors ? ` · <span class="up">${r.errors} Fehlerzeile${r.errors > 1 ? "n" : ""}</span>` : ""}</span>
+      ${badge(r.status)}</div>
+      <div class="more" hidden><pre class="logpre">${r.lines.map(l => err(l) ? `<span class="logerr">${esc(l)}</span>` : esc(l)).join("\n")}</pre></div></div>`).join("");
+}
+
 function showView(v) {
-  ["list", "detail", "katalog", "aend", "dash"].forEach(id => { $(id).style.display = id === v ? "" : "none"; });
+  ["list", "detail", "katalog", "aend", "dash", "logv"].forEach(id => { $(id).style.display = id === v ? "" : "none"; });
   document.querySelectorAll(".tabs a").forEach(a => a.classList.toggle("on", a.dataset.v === v || (v === "detail" && a.dataset.v === "list")));
 }
 function route() {
   if (DATA.trips.length) subText();
   if (location.hash === "#katalog") { charts.splice(0).forEach(c => c.destroy()); showView("katalog"); renderKatalog(); return; }
+  if (location.hash === "#protokoll") { charts.splice(0).forEach(c => c.destroy()); showView("logv"); renderLogs(); return; }
   if (location.hash === "#dashboard") { charts.splice(0).forEach(c => c.destroy()); showView("dash"); renderDash(); return; }
   if (location.hash === "#aenderungen") { charts.splice(0).forEach(c => c.destroy()); showView("aend"); renderAend(); return; }
   const m = location.hash.match(/t=(\d+)/);

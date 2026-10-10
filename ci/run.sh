@@ -17,7 +17,7 @@ cd "$RT"
 # Commit angehängt an logs/<datum>.log im privaten Daten-Repo
 TMPLOG="$RUNNER_TEMP/lauf.log"
 exec 3>&1 >>"$TMPLOG" 2>&1
-trap 'rc=$?; stop_autosave 2>/dev/null; [[ "$MODE" != "deploy" ]] && python ci_progress.py done $rc; echo "Lauf beendet (Code $rc) – Details im privaten Protokoll" >&3' EXIT
+trap 'rc=$?; stop_autosave 2>/dev/null; [[ "$MODE" != "deploy" ]] && python ci_progress.py done $rc; if [[ $rc != 0 ]]; then echo "=== Abbruch $(date "+%F %T") Code $rc ==="; save_data "abbruch"; fi; echo "Lauf beendet (Code $rc) – Details im privaten Protokoll" >&3' EXIT
 echo "=== $(date '+%F %T') Modus $MODE ==="
 # Fortschritt: Zählerzeilen (ohne Reisenamen) live ins öffentliche Protokoll und auf die Seite
 cp "$CODE/ci/progress.py" "$RT/ci_progress.py"
@@ -76,6 +76,7 @@ python export.py daten
 fi
 
 stop_autosave
+echo "=== Ende $(date '+%F %T') ==="
 save_data "$MODE"
 
 # Seite immer mit dem NEUESTEN Seiten-Code bauen (der Lauf kann lange dauern; sonst würde er
