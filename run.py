@@ -102,6 +102,9 @@ def daten_dir():
 
 
 DETAIL_KEYS = ("region", "available", "itinerary", "tariffs", "map")
+TNAME = {"CLASSICAI": "CLASSIC ALL IN", "PREMIUMAI": "PREMIUM ALL IN", "COMFORTAI": "COMFORT ALL IN"}
+TCODE = {"IND": "PREMIUM", "INDAI": "PREMIUM ALL IN", "CLA": "CLASSIC", "LIG": "LIGHT",
+         "CLAAI": "CLASSIC ALL IN", "COMAI": "COMFORT ALL IN"}
 
 
 def run_catalog(incremental=False):
@@ -166,11 +169,11 @@ def run_catalog(incremental=False):
     # Kabinenart, Aktionen) -> daten/catalog-history/<datum>.json, wird nie überschrieben
     hist = {}
     for t in cat["trips"]:
-        ai = {}
+        tp = {}   # Kabinenart -> Tarif -> günstigster Kabinenpreis (alle Tarife)
         for x in t.get("tariffs") or []:
-            if x["tariff"] in ("PREMIUM ALL IN", "PREMIUMAI") and x.get("cabin"):
-                ai[x["cabin_type"]] = x["cabin"]
-        hist[t["id"]] = {"pp": t.get("from_pp"), "tarif": t.get("from_tariff"), "ai": ai or None,
+            if x.get("cabin"):
+                tp.setdefault(x["cabin_type"], {})[TNAME.get(x["tariff"], x["tariff"])] = x["cabin"]
+        hist[t["id"]] = {"pp": t.get("from_pp"), "tarif": t.get("from_tariff"), "t": tp or None,
                          "camp": [c["name"] for c in t.get("campaigns") or []] or None,
                          "notes": t.get("notes") or None}
     (d / "catalog-history").mkdir(exist_ok=True)
@@ -195,7 +198,7 @@ def run_fleet():
     trips = [t for t in cat if t.get("start") and today <= t["start"] <= lim and t.get("var")]
     print(f"Flotte: {len(trips)} Reisen bis {lim}", flush=True)
     aida.SUBCAT_CACHE = str(d / "ships")
-    res = {}
+    res, prices = {}, {}
     url = "https://aida.de/finden/NO07261121/PREMIUM?pax[adults]=2"
     todo = list(trips)
     for attempt in range(1, 4):
@@ -204,6 +207,12 @@ def run_fleet():
                 while todo:
                     part, todo = todo[:20], todo[20:]
                     res.update(aida.fleet_free(call, part, log=lambda m: print(m, flush=True)))
+                    try:
+                        for j, pc in aida.fleet_prices(call, [t["id"] for t in part],
+                                                       log=lambda m: print(m, flush=True)).items():
+                            prices[j] = pc
+                    except aida.AidaError as e:
+                        print(f"Preise: {e}", flush=True)
             break
         except aida.CabinSelectionClosed as e:
             print(f"Flotte abgebrochen: {e}", flush=True)
@@ -230,6 +239,9 @@ def run_fleet():
             mv["+"] = sorted(set(mv["+"]) | (new - old))
             mv["-"] = sorted(set(mv["-"]) | (old - new))
         h["cabins"] = {k: v for k, v in cats.items() if v}
+        if prices.get(t["id"]):   # Preise je Unterkategorie und Tarif (Tarifnamen ausgeschrieben)
+            h.setdefault("prices", {})[today] = {code: {TCODE.get(tf, tf): amt for tf, amt in tp.items()}
+                                                 for code, tp in prices[t["id"]].items()}
         h["updated"] = stamp
         f.write_text(json.dumps(h, ensure_ascii=False, separators=(",", ":")))
     print(f"Flotte: {sum(1 for t in trips if res.get(t['id']))} Reisen gespeichert", flush=True)

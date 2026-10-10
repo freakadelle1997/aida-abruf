@@ -173,6 +173,59 @@ def _sales(con, runs, focus=None):
             "capped_cats": sorted(caps[-1])}
 
 
+TNAME_PY = {"CLASSICAI": "CLASSIC ALL IN", "PREMIUMAI": "PREMIUM ALL IN", "COMFORTAI": "COMFORT ALL IN"}
+CAT_PRICE_COLS = {"price_light": "LIGHT", "price_classic": "CLASSIC", "price_classic_ai": "CLASSIC ALL IN",
+                  "price_premium": "PREMIUM", "price_premium_ai": "PREMIUM ALL IN", "price_comfort_ai": "COMFORT ALL IN"}
+
+
+def _write_price_histories(con, data, daten, out_dir, tracked):
+    """Preisverlauf je Reise als prices/<id>.json neben die Seite:
+    {"x": [zeitpunkte], "g": {gruppe: {tarif: [preise]}}} – Gruppe = Kabinenart (I, M, B ...)
+    oder Unterkategorie (IA, IB ...). Quellen: tägliche Katalog-Momentaufnahmen (alle Reisen),
+    Unterkategorie-Preise der 4-Monats-Reisen (fleet/) und stündliche Abrufe hinterlegter Reisen."""
+    hist = {}   # id -> {zeitpunkt: {gruppe: {tarif: preis}}}
+    ch = daten / "catalog-history"
+    for f in sorted(ch.glob("*.json")) if ch.exists() else []:
+        day = f.stem
+        for jid, e in json.loads(f.read_text())["trips"].items():
+            g = {}
+            for typ, tp in (e.get("t") or {}).items():
+                g[typ] = {TNAME_PY.get(k, k): v for k, v in tp.items()}
+            if not g and e.get("ai"):
+                g = {typ: {"PREMIUM ALL IN": v} for typ, v in e["ai"].items()}
+            if g:
+                hist.setdefault(jid, {}).setdefault(day, {}).update(g)
+    fd = daten / "fleet"
+    for f in fd.glob("*.json") if fd.exists() else []:
+        h = json.loads(f.read_text())
+        for day, cats in (h.get("prices") or {}).items():
+            hist.setdefault(h["journey"], {}).setdefault(day, {}).update(cats)
+    for jid in tracked:   # hinterlegte Reisen: jeder Abruf, letzte 30 Tage
+        for r in con.execute("SELECT id, fetched_at FROM runs WHERE journey=? AND ok=1 AND fetched_at >= ?"
+                             " ORDER BY fetched_at", (jid, (date.today() - timedelta(days=30)).isoformat())):
+            g = {}
+            for t in con.execute("SELECT cabin_type, tariff, cabin FROM tariffs WHERE run_id=?", (r["id"],)):
+                if t["cabin"]:
+                    g.setdefault(t["cabin_type"], {})[TNAME_PY.get(t["tariff"], t["tariff"])] = t["cabin"]
+            for c in con.execute("SELECT * FROM categories WHERE run_id=?", (r["id"],)):
+                for col, lab in CAT_PRICE_COLS.items():
+                    if col in c.keys() and c[col]:
+                        g.setdefault(c["code"], {})[lab] = c[col]
+            if g:
+                hist.setdefault(jid, {})[r["fetched_at"][:16]] = g
+    pdir = out_dir / "prices"
+    pdir.mkdir(exist_ok=True)
+    for jid, byx in hist.items():
+        xs = sorted(byx)
+        groups = sorted({g for v in byx.values() for g in v})
+        out = {"x": xs, "g": {}}
+        for g in groups:
+            tarifs = sorted({tf for v in byx.values() for tf in (v.get(g) or {})})
+            out["g"][g] = {tf: [(byx[x].get(g) or {}).get(tf) for x in xs] for tf in tarifs}
+        (pdir / f"{jid}.json").write_text(json.dumps(out, separators=(",", ":")))
+    return len(hist)
+
+
 def trip_data(con, journey, focus=None):
     runs = _all_runs(con, journey)
     if not runs:
@@ -487,6 +540,7 @@ def build(con=None):
                 b = byid.get(p["id"], {})
                 p.update(title=b.get("title"), ship=b.get("ship"), start=b.get("start"))
     (OUT.parent / "tracked.json").write_text(json.dumps(list(focus) or journeys))
+    _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
     html = TEMPLATE.replace("__DATA__", json.dumps({"trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
@@ -905,6 +959,47 @@ function tariffMatrix(tariffs, withFlight = true, opt = {}) {
   }).join("");
   return `<div class="tmxwrap"><table class="tmx"><thead><tr><th>Kabinenart</th>${tarifs.map(x => `<th${x === "PREMIUM ALL IN" ? ' style="color:var(--s1)"' : ""}>${x}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+// Preisverlauf: Auswahl Kabinenart/Unterkategorie, je Tarif eine Linie
+const PH = {};
+async function priceHistory(el, id, prefer) {
+  if (!el) return;
+  try {
+    const r = await fetch("prices/" + id + ".json", {cache: "no-cache"});
+    if (!r.ok) { el.innerHTML = `<p class="mut">Noch kein Preisverlauf – entsteht ab dem nächsten Tageslauf (8 Uhr).</p>`; return; }
+    PH[id] = await r.json();
+  } catch { return; }
+  const h = PH[id];
+  const groups = Object.keys(h.g).sort((a, b) => (a.length - b.length) || a.localeCompare(b));
+  const label = g => (g.length === 1 ? (CABIN_TYPES[g] || g) + " (alle)" : g);
+  const sel = groups.includes(prefer) ? prefer : (groups.find(g => g.length === 1) || groups[0]);
+  el.innerHTML = `<div class="filters" style="margin:0 0 8px"><label>Kabinenart / Kategorie<select>${groups.map(g =>
+    `<option value="${g}"${g === sel ? " selected" : ""}>${label(g)}</option>`).join("")}</select></label>
+    <span class="mut" style="font-size:12.5px;align-self:center">${h.x.length} Messpunkte seit ${d(h.x[0].slice(0, 10))}</span></div>
+    <div class="box" style="height:260px"><canvas></canvas></div>`;
+  let ch = null;
+  const draw = g => {
+    if (ch) ch.destroy();
+    const lab = h.x.map(x => d(x.slice(0, 10)).slice(0, 6) + (x.length > 10 ? " " + x.slice(11, 16) : ""));
+    const pal = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+    const order = ["LIGHT", "CLASSIC", "CLASSIC ALL IN", "PREMIUM", "PREMIUM ALL IN", "COMFORT ALL IN"];
+    const tfs = Object.keys(h.g[g]).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const o = {responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: {mode: "index", intersect: false},
+      plugins: {legend: {display: true, labels: {color: css("--text-2"), boxWidth: 12}},
+        tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${eur(c.parsed.y)}`}}},
+      scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}},
+               y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), callback: v => eur(v)}}},
+      elements: {line: {borderWidth: 2, tension: 0}, point: {radius: h.x.length > 20 ? 0 : 3}}};
+    ch = new Chart(el.querySelector("canvas"), {type: "line", data: {labels: lab, datasets: tfs.map((tf, i) => ({
+      label: tf, data: h.g[g][tf], borderColor: css(tf === "PREMIUM ALL IN" ? "--s1" : pal[(i + 1) % pal.length]),
+      backgroundColor: css(tf === "PREMIUM ALL IN" ? "--s1" : pal[(i + 1) % pal.length]),
+      borderWidth: tf === "PREMIUM ALL IN" ? 3 : 1.5, spanGaps: true, stepped: true}))}, options: o});
+    charts.push(ch);
+  };
+  el.querySelector("select").addEventListener("change", e => draw(e.target.value));
+  draw(sel);
+}
+
 function changeText(e) {
   if (e.kind === "Preis") return `${e.tariff} ${eur(e.old)} → ${eur(e.new)} <span class="${e.new > e.old ? "up" : "down"}">(${e.new > e.old ? "+" : ""}${eur(e.new - e.old)})</span>`;
   if (e.kind === "Nachschub") return `Nachschub +${e.val} Kabinen`;
@@ -1208,6 +1303,7 @@ function renderDetail(ti) {
       </div>
       ${itinerary(t)}
       ${t.tariffs && t.tariffs.length ? `<div class="sect">Preise je Kabinenart und Tarif</div>${tariffMatrixDetail(t)}<p class="note" style="margin-top:-8px">Kabinenpreis für 2 Erwachsene (günstigste Kabine der Kabinenart${t.focus_prices ? `, in der Zeile ${t.focus_prices.code} der Preis deiner Wunschkategorie ${t.focus_prices.code}; G = CLASSIC-Garantiekabine ohne Kabinenwahl` : ""}). Darunter: inkl. Hin- und Rückflug ab ${FLY_FROM[0]}, sonst ab ${FLY_FROM[1]}; F&amp;F = Family &amp; Friends (−10 % auf den Reisepreis, −7 % auf den Flug). Grün = günstigster Tarif je Kabinenart.</p>` : ""}
+      <div class="sect">Preisverlauf je Tarif</div><div id="ph${ti}"></div>
       ${changesBlock(t)}
       ${focusBlock(t, ti)}
       ${salesBlock(t, ti)}
@@ -1249,6 +1345,7 @@ function renderDetail(ti) {
     </section>`;
   window.scrollTo(0, 0);
   if (t.port_coords) drawRoute($("lm" + ti), t.itinerary, t.port_coords);
+  priceHistory($("ph" + ti), t.journey, t.focus ? t.focus.code : null);
 
   const labels = t.series.map(s => d(s.day).slice(0, 6) + " " + (s.ts ? s.ts.slice(11, 16) : ""));
   const base = (yfmt) => ({
@@ -1390,9 +1487,11 @@ function toggleK(id) {
       <p class="kmeta">${Object.entries(t.fleet.cats).sort().map(([k, v]) => `<b>${k}</b> ${v}${v >= 100 ? "+" : ""}`).join(" · ")}
       ${t.fleet.prev != null ? `<br>Seit dem Vortag: ${t.fleet.plus} Kabinen neu frei, ${t.fleet.minus} weg` : ""}</p>` : ""}
     ${tariffMatrix(t.tariffs)}
+    <div class="sect">Preisverlauf je Tarif</div><div id="kph_${id}"></div>
     <a href="${tripUrl(id)}" target="_blank" rel="noopener">Bei AIDA ansehen ↗</a>`;
   const it = (t.itinerary || []).map((p, i) => Object.assign({day: i + 1}, p));
   drawRoute($("km_" + id), it, KPORTS);
+  priceHistory($("kph_" + id), id, "IA");
 }
 async function markK(id) {
   if ((DATA.tracked || []).includes(id) || KMARKED.has(id)) return;

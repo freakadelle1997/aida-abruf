@@ -30,7 +30,7 @@ fi
 python import_db.py daten
 python intake.py || echo "intake fehlgeschlagen"
 case "$MODE" in
-    daily)            python run.py --catalog --incremental || echo "Katalog fehlgeschlagen" ;;
+    daily)            python run.py --catalog || echo "Katalog fehlgeschlagen" ;;   # täglich alle Details (Preisverlauf)
     weekly|catalog|both) python run.py --catalog || echo "Katalog fehlgeschlagen" ;;
 esac
 case "$MODE" in

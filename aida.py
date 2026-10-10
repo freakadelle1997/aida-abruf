@@ -176,6 +176,54 @@ def _iso(d):
     return datetime.strptime(d, "%d.%m.%Y").date().isoformat()
 
 
+PRICE_TARIFFS = ["IND", "INDAI", "CLA", "LIG", "CLAAI", "COMAI"]
+
+
+def _price_body(jid, tc, travellers):
+    return {"cruise": {"journeyIdentifier": [jid], "tariffTypes": [tc]},
+            "paging": {"entity": "Route", "resultsFrom": 1, "resultsTotal": 20},
+            "detailLevel": ["PriceDetails"], "productTypes": ["Cruise", "CruisePackage"],
+            "flight": {"allowOpenJaw": False, "allowOneway": True},
+            "period": {"start": {"preOffset": 0, "date": date.today().isoformat(), "postOffset": 999}},
+            "composition": "none", "passengers": travellers}
+
+
+def _parse_prices(pr, prices):
+    """player.proxy-Antwort -> prices[(tarif, unterkategorie)] = günstigster Kabinenpreis (ohne Flug)."""
+    services = {s["id"]: s for s in (pr or {}).get("services", [])}
+    for prod in (pr or {}).get("products", []):
+        refs = prod["serviceReferences"]
+        if not all("cruiseService" in services.get(r["serviceId"], {}) for r in refs):
+            continue  # Pakete mit Flug auslassen
+        for r in refs:
+            cs = services[r["serviceId"]]["cruiseService"]
+            var = next(v for v in cs["cruiseVariants"] if v["id"] == r["serviceVariantId"])
+            key = (var["cabin"]["tariffType"], var["cabin"]["cabinCode"])
+            amt = prod["priceInformation"]["amount"]
+            if key not in prices or amt < prices[key]:
+                prices[key] = amt
+    return prices
+
+
+def fleet_prices(call, ids, log=print, chunk=10):
+    """Preise je Unterkategorie (IA, IB, ...) und Tarif für viele Reisen, parallel aus der Seite.
+    Liefert {id: {kategorie: {tarif: preis}}}."""
+    travellers = _travellers({"adults": 2, "juveniles": 0, "children": 0, "babies": 0})
+    out = {}
+    for k in range(0, len(ids), chunk):
+        part = ids[k:k + chunk]
+        items = [(f"{j}|{tc}", f"{REQ}/player.proxy.json?subCategoryCall", _price_body(j, tc, travellers))
+                 for j in part for tc in PRICE_TARIFFS]
+        res = call.posts(items)
+        for key, pr in res.items():
+            j = key.split("|")[0]
+            p = _parse_prices(pr, {})
+            for (tf, code), amt in p.items():
+                out.setdefault(j, {}).setdefault(code, {})[tf] = amt
+        log(f"  Preise {min(k + chunk, len(ids))}/{len(ids)} Reisen")
+    return out
+
+
 TARIFF_KEYS = {"lig": "LIGHT", "cla": "CLASSIC", "ind": "PREMIUM", "claAl": "CLASSIC ALL IN",
                "indAl": "PREMIUM ALL IN", "comAl": "COMFORT ALL IN", "pau": "PAUSCHAL",
                "pauAl": "PAUSCHAL ALL IN", "see": "SEEREISE", "seeAl": "SEEREISE ALL IN"}
@@ -281,26 +329,8 @@ def snapshot(call, trip):
     # Kabinenpreise (reine Kreuzfahrt, ohne Flug) je Tarif. PREMIUM liefert Preise je
     # Unterkategorie (VA, VB ...), CLASSIC nur für die Garantie-Kategorie (BV, IV ...).
     prices = {}  # (tarif, kategorie) -> günstigster Kabinenpreis
-    for tc in dict.fromkeys([tariff_code, "IND", "INDAI", "CLA", "LIG", "CLAAI", "COMAI"]):
-        price_req = {"cruise": {"journeyIdentifier": [jid], "tariffTypes": [tc]},
-                     "paging": {"entity": "Route", "resultsFrom": 1, "resultsTotal": 20},
-                     "detailLevel": ["PriceDetails"], "productTypes": ["Cruise", "CruisePackage"],
-                     "flight": {"allowOpenJaw": False, "allowOneway": True},
-                     "period": {"start": {"preOffset": 0, "date": date.today().isoformat(), "postOffset": 999}},
-                     "composition": "none", "passengers": travellers}
-        pr = call(f"{REQ}/player.proxy.json?subCategoryCall", price_req)
-        services = {s["id"]: s for s in pr.get("services", [])}
-        for prod in pr.get("products", []):
-            refs = prod["serviceReferences"]
-            if not all("cruiseService" in services.get(r["serviceId"], {}) for r in refs):
-                continue  # Pakete mit Flug auslassen
-            for r in refs:
-                cs = services[r["serviceId"]]["cruiseService"]
-                var = next(v for v in cs["cruiseVariants"] if v["id"] == r["serviceVariantId"])
-                key = (var["cabin"]["tariffType"], var["cabin"]["cabinCode"])
-                amt = prod["priceInformation"]["amount"]
-                if key not in prices or amt < prices[key]:
-                    prices[key] = amt
+    for tc in dict.fromkeys([tariff_code] + PRICE_TARIFFS):
+        _parse_prices(call(f"{REQ}/player.proxy.json?subCategoryCall", _price_body(jid, tc, travellers)), prices)
 
     categories = []
     any_state = False   # liefert keine Kategorie Kabinen mit Status -> Kabine wird zugeteilt
