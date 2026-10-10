@@ -1539,6 +1539,11 @@ function drawKList() {
       ${(t.campaigns || []).length || (t.notes || []).length ? `<div class="chips" style="margin:8px 0 0">${(t.campaigns || []).map(c => `<span class="chip camp">${c.name}${c.until ? " bis " + d(c.until) : ""}</span>`).join("")}${(t.notes || []).map(n => `<span class="chip">${n}</span>`).join("")}</div>` : ""}
       <div class="more" hidden></div></div>`;
   }).join("") + (list.length > KSHOW ? `<button class="mark" onclick="KSHOW += 50; drawKList()">Weitere anzeigen</button>` : "");
+  if (KOPEN && document.getElementById("kr_" + KOPEN)) {
+    const id = KOPEN; KOPEN = null;
+    toggleK(id);
+    setTimeout(() => document.getElementById("kr_" + id).scrollIntoView({behavior: "smooth", block: "start"}), 100);
+  }
 }
 function toggleK(id) {
   const more = document.querySelector(`#kr_${id} .more`);
@@ -1614,7 +1619,16 @@ async function togglePC(id) {
       } else html += `<p class="mut">Die Aufschlüsselung je Tarif und Kabinenart gibt es ab morgen (erste vollständige Tagesaufnahme heute).</p>`;
     }
   } catch {}
-  box.innerHTML = html;
+  box.innerHTML = html + `<button class="mark" style="margin:8px 0 4px" onclick="goTrip('${id}')">Zur Reise →</button>`;
+}
+// Zur Reise im Projekt: hinterlegt -> Detailansicht, sonst Katalog mit der Reise aufgeklappt
+let KOPEN = null;
+function goTrip(id) {
+  const ti = DATA.trips.findIndex(t => t.journey === id);
+  if (ti >= 0) { location.hash = "t=" + ti; return; }
+  Object.assign(KF, {q: id, region: "", ship: "", from: "", to: "", nmin: "", nmax: "", pmax: "", camp: false});
+  KOPEN = id;
+  location.hash = "#katalog";
 }
 
 function renderAend() {
