@@ -1,9 +1,8 @@
 name: Sync
 # Stündlich 8–20 Uhr deutscher Zeit; einmal täglich zusätzlich der große Abgleich.
+# Gestartet wird stündlich vom Cloudflare-Worker (workflow_dispatch, mode=auto); GitHubs eigener
+# Zeitplan hat in diesem Repo nicht zuverlässig ausgelöst.
 on:
-  schedule:
-    - cron: "7 6-18 * * *"
-    - cron: "7 7-19 * * *"
   workflow_dispatch:
     inputs:
       mode:
