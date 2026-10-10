@@ -55,6 +55,11 @@ if ! git diff --cached --quiet; then
     for i in 1 2 3; do git pull -q --rebase && git push -q && break || sleep 5; done
 fi
 
+# Seite immer mit dem NEUESTEN Seiten-Code bauen (der Lauf kann lange dauern; sonst würde er
+# eine zwischenzeitlich veröffentlichte neuere Fassung mit altem Code überschreiben)
+git -C "$CODE" pull -q --ff-only || true
+cp "$CODE/report.py" "$RT/report.py"
+rm -rf "$RT/functions" && cp -R "$CODE/functions" "$RT/"
 cd "$RT"
 rm -rf _public && mkdir -p _public
 python - <<'PY'
