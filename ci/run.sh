@@ -46,7 +46,8 @@ if [[ "$MODE" != "deploy" ]]; then
     ( while sleep 120; do save_data "zwischenstand" >/dev/null 2>&1; done ) &
     AUTOSAVE=$!
 fi
-stop_autosave() { [[ -n "$AUTOSAVE" ]] && kill "$AUTOSAVE" 2>/dev/null && wait "$AUTOSAVE" 2>/dev/null; AUTOSAVE=""; }
+# Beenden der Hintergrund-Sicherung darf den Lauf nie abbrechen (wait liefert nach kill Code 143)
+stop_autosave() { if [[ -n "$AUTOSAVE" ]]; then kill "$AUTOSAVE" 2>/dev/null || true; wait "$AUTOSAVE" 2>/dev/null || true; fi; AUTOSAVE=""; return 0; }
 
 # Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
 # hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
