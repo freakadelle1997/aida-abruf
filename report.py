@@ -1067,7 +1067,7 @@ async function loadPending() {
 function nextQuery() {
   const now = new Date();
   for (let add = 0; add < 2; add++) for (let h = 8; h <= 20; h++) {
-    const t = new Date(now); t.setDate(t.getDate() + add); t.setHours(h, 0, 0, 0);
+    const t = new Date(now); t.setDate(t.getDate() + add); t.setHours(h, 7, 0, 0);   // Start jeweils hh:07
     if (t > now) return t;
   }
 }

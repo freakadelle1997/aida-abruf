@@ -14,6 +14,13 @@ cp -R "$CODE/functions" "$RT/"
 ln -sfn "$ROOT" "$RT/daten"
 cd "$RT"
 
+# Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
+# hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
+if [[ "$MODE" == "trips" && ! -f "$ROOT/catalog-history/$(date +%F).json" ]]; then
+    if [[ "$(date +%u)" == "1" ]]; then MODE=weekly; else MODE=daily; fi
+    echo "Heutiger Katalog fehlt noch -> Modus $MODE"
+fi
+
 python import_db.py daten
 python intake.py || echo "intake fehlgeschlagen"
 case "$MODE" in
