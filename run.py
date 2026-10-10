@@ -235,7 +235,9 @@ def run_fleet():
     fd = d / "fleet"
     fd.mkdir(exist_ok=True)
     # heute schon erledigte Reisen überspringen (Wiederaufnahme nach Abbruch)
-    done_today = {f.stem for f in fd.glob("*.json") if today in (json.loads(f.read_text()).get("counts") or {})}
+    def complete_today(h):            # erledigt = heute Kabinen UND Preise vorhanden
+        return today in (h.get("counts") or {}) and today in (h.get("prices") or {})
+    done_today = {f.stem for f in fd.glob("*.json") if complete_today(json.loads(f.read_text()))}
     todo = [t for t in trips if t["id"] not in done_today]
     print(f"Flotte: {len(trips)} Reisen bis {lim}, offen {len(todo)}", flush=True)
     aida.SUBCAT_CACHE = str(d / "ships")

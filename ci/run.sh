@@ -25,11 +25,14 @@ progress() { python -u ci_progress.py pipe "$TMPLOG"; }
 [[ "$MODE" != "deploy" ]] && python ci_progress.py start "$MODE"
 
 # Zwischenstand sichern: nach jeder Phase ins private Daten-Repo (bei Abbruch geht nur die laufende verloren)
+# Eigene Protokolldatei je Lauf (gleichzeitige Läufe können sich so nie in die Quere kommen)
+RUNLOG="logs/$(date +%F)/$(date +%H%M%S)-$MODE.log"
 save_data() {
+    [[ "$MODE" == "deploy" ]] && return 0      # reine Veröffentlichung schreibt nichts ins Daten-Repo
     # flock: Hintergrund-Sicherung und Phasen-Sicherung nie gleichzeitig an git
     ( flock 9
       cd "$ROOT"
-      mkdir -p logs && cat "$TMPLOG" >> "logs/$(date +%F).log" && : > "$TMPLOG"
+      mkdir -p "$(dirname "$RUNLOG")" && cat "$TMPLOG" >> "$RUNLOG" && : > "$TMPLOG"
       git config user.name "sync"
       git config user.email "sync@users.noreply.github.com"
       for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-partial.json catalog-history changes fleet dashboard ships-img logs README.md; do
@@ -37,7 +40,13 @@ save_data() {
       done
       if ! git diff --cached --quiet; then
           git commit -q -m "Daten $(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M') ($1)"
-          for i in 1 2 3; do git pull -q --rebase --autostash && git push -q && break || sleep 5; done
+          ok=""
+          for i in 1 2 3; do
+              if git pull -q --rebase --autostash 2>>"$RUNNER_TEMP/git.err" && git push -q 2>>"$RUNNER_TEMP/git.err"; then ok=1; break; fi
+              git rebase --abort 2>/dev/null || true   # nie in halbem Zustand hängen bleiben
+              sleep 5
+          done
+          [[ -n "$ok" ]] || { echo "Sichern fehlgeschlagen ($1): $(tail -2 "$RUNNER_TEMP/git.err" | tr '\n' ' ')" >&3; exit 1; }
       fi ) 9>"$RUNNER_TEMP/git.lock" || echo "Sichern fehlgeschlagen ($1)"
 }
 # Alles Geholte laufend sichern: alle 2 Minuten ins private Daten-Repo

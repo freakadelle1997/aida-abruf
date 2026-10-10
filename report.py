@@ -270,7 +270,15 @@ def _write_logs(daten, out_dir, days=7):
     je Lauf Start, Modus, Ende/Abbruch, Fehlerzeilen und alle Zeilen."""
     ld = daten / "logs"
     runs = []
-    for f in sorted(ld.glob("*.log"))[-days:] if ld.exists() else []:
+    files = []
+    if ld.exists():
+        recent = sorted({p.stem for p in ld.glob("*.log")} | {p.name for p in ld.iterdir() if p.is_dir()})[-days:]
+        for day in recent:
+            if (ld / f"{day}.log").exists():
+                files.append(ld / f"{day}.log")                     # alte Tagesdatei
+            if (ld / day).is_dir():
+                files += sorted((ld / day).glob("*.log"))           # neu: eine Datei je Lauf
+    for f in files:
         cur = None
         for line in f.read_text(errors="replace").splitlines():
             m = re.match(r"=== (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) Modus (\S+) ===", line)
