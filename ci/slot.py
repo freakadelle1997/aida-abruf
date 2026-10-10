@@ -19,7 +19,10 @@ event, cron, manual = (sys.argv[1:] + ["", "", ""])[:3]
 now = datetime.now(ZoneInfo("Europe/Berlin"))
 dst = bool(now.dst())
 
-if event == "workflow_dispatch":
+if event == "workflow_dispatch" and manual == "auto":
+    # vom Cloudflare-Wecker: nur 8–20 Uhr deutscher Zeit; Katalog-Nachholen macht ci/run.sh
+    run, mode = ("yes" if 8 <= now.hour <= 20 else "no"), "trips"
+elif event == "workflow_dispatch":
     run, mode = "yes", (manual or "trips")
 elif event == "schedule":
     run = "yes" if (cron == SUMMER and dst) or (cron == WINTER and not dst) else "no"
