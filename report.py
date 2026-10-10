@@ -574,6 +574,7 @@ def build(con=None):
             for p in cat_changes["price"]:
                 b = byid.get(p["id"], {})
                 p.update(title=b.get("title"), ship=b.get("ship"), start=b.get("start"))
+                p.setdefault("nt", b.get("from_tariff"))
     (OUT.parent / "tracked.json").write_text(json.dumps(list(focus) or journeys))
     build_id = datetime.now().isoformat(timespec="seconds")
     (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
@@ -758,6 +759,10 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .mark { border: 1px solid var(--s1); color: var(--s1); background: none; border-radius: 8px; padding: 5px 10px;
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .mark.on { background: var(--s1); color: #fff; cursor: default; }
+.pcrow { border-top: 1px solid var(--border); }
+.pctop { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px; cursor: pointer; font-size: 14px; flex-wrap: wrap; }
+.pctop:hover { background: color-mix(in srgb, var(--s1) 6%, transparent); }
+.pcmore { padding: 0 2px 10px; }
 .kmeta { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 .chg { width: auto; max-width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 22px; }
 .chg td { padding-right: 18px !important; }
@@ -1545,6 +1550,52 @@ async function markK(id) {
 }
 
 // ---------- Änderungsprotokoll ----------
+const TARIFF_LABEL = {IND: "PREMIUM", INDAI: "PREMIUM ALL IN", CLA: "CLASSIC", LIG: "LIGHT", CLAAI: "CLASSIC ALL IN",
+  COMAI: "COMFORT ALL IN", PAU: "PAUSCHAL", SEE: "SEEREISE"};
+function priceChangeCards(cc) {
+  const by = {};
+  cc.price.forEach(p => (by[p.ship || "?"] = by[p.ship || "?"] || []).push(p));
+  return Object.entries(by).sort((a, b) => b[1].length - a[1].length).map(([ship, list]) => {
+    const up = list.filter(p => p.new > p.old).length, down = list.length - up;
+    return `<div class="krow"><div class="top" onclick="this.parentNode.querySelector('.more').hidden ^= 1">
+        <h3>${ship}</h3><span class="m">${list.length} Änderungen · <span class="up">${up} rauf</span> · <span class="down">${down} runter</span></span></div>
+      <div class="more" hidden>${list.sort((a, b) => (a.new - a.old) - (b.new - b.old)).map(p => `
+        <div class="pcrow" id="pc_${p.id}">
+          <div class="pctop" onclick="togglePC('${p.id}')"><span>${p.title || p.id} <span class="mut">· ${p.start ? d(p.start) : ""}</span></span>
+            <span class="t">${eur(p.old)} → ${eur(p.new)} <span class="${p.new > p.old ? "up" : "down"}">(${p.new > p.old ? "+" : ""}${eur(p.new - p.old)})</span> ▾</span></div>
+          <div class="pcmore" hidden></div></div>`).join("")}</div></div>`;
+  }).join("");
+}
+// Details einer Preisänderung: ab-Preis-Tarif und alle geänderten Tarifpreise je Kabinenart
+async function togglePC(id) {
+  const box = document.querySelector(`#pc_${id} .pcmore`);
+  if (!box) return;
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  const p = (DATA.catalog_changes.price || []).find(x => x.id === id) || {};
+  const tl = c => TARIFF_LABEL[c] || c || "?";
+  let html = `<p class="kmeta" style="margin:6px 0">„ab“-Preis pro Person: ${eur(p.old)} ${p.ot ? `(${tl(p.ot)})` : ""} → ${eur(p.new)} (${tl(p.nt)})${p.ot && p.nt && p.ot !== p.nt ? ` – <b>der günstigste Preis liegt jetzt in einem anderen Tarif</b>` : ""}</p>`;
+  let rows = "";
+  try {
+    const r = await fetch("prices/" + id + ".json", {cache: "no-cache"});
+    if (r.ok) {
+      const h = await r.json();
+      const days = h.x.map((x, i) => [x, i]).filter(([x]) => x.length === 10);
+      if (days.length >= 2) {
+        const [a, b] = [days[days.length - 2][1], days[days.length - 1][1]];
+        Object.entries(h.g).filter(([g]) => g.length === 1).forEach(([g, tfs]) => Object.entries(tfs).forEach(([tf, v]) => {
+          if (v[a] != null && v[b] != null && v[a] !== v[b])
+            rows += `<tr><td>${CABIN_TYPES[g] || g}</td><td>${tf}</td><td class="t">${eur(v[a])} → ${eur(v[b])}</td>
+              <td class="t"><span class="${v[b] > v[a] ? "up" : "down"}">${v[b] > v[a] ? "+" : ""}${eur(v[b] - v[a])}</span></td></tr>`;
+        }));
+        html += rows ? `<table class="chg"><tr><td><b>Kabinenart</b></td><td><b>Tarif</b></td><td><b>Preis (2 Pers.)</b></td><td><b>Differenz</b></td></tr>${rows}</table>`
+                     : `<p class="mut">Kein Tarif hat sich geändert – der „ab“-Preis hat nur den Tarif bzw. das Angebot gewechselt.</p>`;
+      } else html += `<p class="mut">Die Aufschlüsselung je Tarif und Kabinenart gibt es ab morgen (erste vollständige Tagesaufnahme heute).</p>`;
+    }
+  } catch {}
+  box.innerHTML = html;
+}
+
 function renderAend() {
   const root = $("aend");
   const ev = [];
@@ -1559,8 +1610,7 @@ function renderAend() {
     + `<div class="sect">Katalog${cc ? " – Vergleich vom " + d(cc.date) : ""}</div>` + (!cc ? `<p class="mut">Der erste Vergleich entsteht beim nächsten Katalog-Abruf (täglich 8 Uhr).</p>` : `
       <p class="kmeta">${cc.new.length} neu · ${cc.gone.length} entfallen · ${cc.price.length} Preisänderungen („ab“-Preis p. P.)</p>
       ${cc.new.length ? `<h3 style="font-size:15px">Neu im Katalog</h3><table class="chg">${cc.new.map(r => `<tr><td>${trip(r)}</td></tr>`).join("")}</table>` : ""}
-      ${cc.price.length ? `<h3 style="font-size:15px">Preisänderungen</h3><table class="chg">${cc.price.slice().sort((a, b) => (a.new - a.old) - (b.new - b.old)).slice(0, 100)
-        .map(r => `<tr><td>${trip(r)}</td><td class="t">${eur(r.old)} → ${eur(r.new)} <span class="${r.new > r.old ? "up" : "down"}">(${r.new > r.old ? "+" : ""}${eur(r.new - r.old)})</span></td></tr>`).join("")}</table>` : ""}
+      ${cc.price.length ? `<h3 style="font-size:15px">Preisänderungen nach Schiff</h3>${priceChangeCards(cc)}` : ""}
       ${cc.gone.length ? `<h3 style="font-size:15px">Entfallen (ausgebucht oder abgesagt)</h3><table class="chg">${cc.gone.map(r => `<tr><td>${r.id}</td></tr>`).join("")}</table>` : ""}`);
 }
 

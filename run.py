@@ -159,7 +159,9 @@ def run_catalog(incremental=False):
             return t.get("from_pp")
         ch = {"date": cat["fetched_at"][:10],
               "new": sorted(set(new) - set(old)), "gone": sorted(set(old) - set(new)),
-              "price": [{"id": j, "old": low(old[j]), "new": low(new[j])} for j in sorted(set(new) & set(old))
+              "price": [{"id": j, "old": low(old[j]), "new": low(new[j]),
+                         "ot": old[j].get("from_tariff"), "nt": new[j].get("from_tariff")}   # Tarif des ab-Preises
+                        for j in sorted(set(new) & set(old))
                         if low(old[j]) and low(new[j]) and low(old[j]) != low(new[j])]}
         (d / "changes").mkdir(exist_ok=True)
         (d / "changes" / f"katalog-{ch['date']}.json").write_text(json.dumps(ch, ensure_ascii=False, indent=1))
