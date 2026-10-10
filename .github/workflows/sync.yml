@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "trips | daily | weekly | catalog | fleet"
+        description: "trips | daily | weekly | catalog | fleet | deploy"
         default: trips
 concurrency:
   group: sync

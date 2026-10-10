@@ -2,7 +2,7 @@
 # Ein Abruf auf GitHub Actions: Datenbank aus dem Daten-Repo aufbauen, abfragen, Daten
 # zurückschreiben, Übersicht zu Cloudflare Pages hochladen. Läuft unter xvfb-run (Akamai
 # lässt nur einen sichtbaren Browser durch).
-#   ci/run.sh trips|daily|weekly|catalog|fleet
+#   ci/run.sh trips|daily|weekly|catalog|fleet|deploy   (deploy = nur Seite bauen und hochladen)
 set -euo pipefail
 MODE="${1:-trips}"
 CODE="$GITHUB_WORKSPACE"                 # Checkout des öffentlichen Abruf-Repos (nur Code)
@@ -22,12 +22,13 @@ echo "=== $(date '+%F %T') Modus $MODE ==="
 
 # Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
 # hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
-if [[ "$MODE" == "trips" && ! -f "$ROOT/catalog-history/$(date +%F).json" ]]; then
+if [[ "$MODE" == "trips" && "$(date +%H)" -ge 8 && ! -f "$ROOT/catalog-history/$(date +%F).json" ]]; then
     if [[ "$(date +%u)" == "1" ]]; then MODE=weekly; else MODE=daily; fi
     echo "Heutiger Katalog fehlt noch -> Modus $MODE"
 fi
 
 python import_db.py daten
+if [[ "$MODE" != "deploy" ]]; then
 python intake.py || echo "intake fehlgeschlagen"
 case "$MODE" in
     daily)            python run.py --catalog || echo "Katalog fehlgeschlagen" ;;   # täglich alle Details (Preisverlauf)
@@ -40,6 +41,7 @@ if [[ "$MODE" != "catalog" && "$MODE" != "fleet" ]]; then
     python run.py || echo "Abruf mit Fehlern"
 fi
 python export.py daten
+fi
 
 cd "$ROOT"
 mkdir -p logs && cat "$TMPLOG" >> "logs/$(date +%F).log" && : > "$TMPLOG"
