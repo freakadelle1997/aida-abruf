@@ -13,6 +13,12 @@ cp "$CODE"/*.py "$RT/"
 cp -R "$CODE/functions" "$RT/"
 ln -sfn "$ROOT" "$RT/daten"
 cd "$RT"
+# Ausgaben nicht ins öffentliche Actions-Protokoll: erst in eine temporäre Datei, vor dem
+# Commit angehängt an logs/<datum>.log im privaten Daten-Repo
+TMPLOG="$RUNNER_TEMP/lauf.log"
+exec 3>&1 >>"$TMPLOG" 2>&1
+trap 'echo "Lauf beendet (Code $?) – Details im privaten Protokoll" >&3' EXIT
+echo "=== $(date '+%F %T') Modus $MODE ==="
 
 # Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
 # hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
@@ -36,9 +42,10 @@ fi
 python export.py daten
 
 cd "$ROOT"
+mkdir -p logs && cat "$TMPLOG" >> "logs/$(date +%F).log" && : > "$TMPLOG"
 git config user.name "sync"
 git config user.email "sync@users.noreply.github.com"
-for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-history changes fleet README.md; do
+for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-history changes fleet logs README.md; do
     [[ -e "$p" ]] && git add "$p"
 done
 if ! git diff --cached --quiet; then
