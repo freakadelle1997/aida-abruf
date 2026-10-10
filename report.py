@@ -947,11 +947,11 @@ function salesBlock(t, ti) {
     </div>
     ${prog ? `<p class="note" style="margin:0 0 14px">${prog}</p>` : ""}
     <div class="charts">
-      <div class="chart"><h3>Bewegungen je Abruf</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
+      <div class="chart"><h3>Bewegungen kumuliert</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
       <div class="chart"><h3>Netto verkauft seit Beginn</h3><div class="box"><canvas id="sc${ti}"></canvas></div></div>
     </div>
     ${s.by_day.length ? `<table class="chg"><tr><td class="t"><b>Tag</b></td><td><b>verkauft</b></td><td><b>kurz reserviert</b></td></tr>${s.by_day.map(r => `<tr><td class="t">${d(r[0])}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}</table>` : ""}
-    <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Rot = verschwunden, grün = wieder frei. „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).</p>`;
+    <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Links kumuliert: rot = verschwundene, grün = wieder frei gewordene Kabinen seit Beobachtungsbeginn; rechts die Differenz (netto verkauft). „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).</p>`;
 }
 
 function focusBlock(t, ti) {
@@ -1285,11 +1285,13 @@ function renderDetail(ti) {
   if (t.sales && $("sr" + ti)) {
     const sl = t.sales.per_run.map(r => d(r.ts.slice(0, 10)).slice(0, 6) + " " + r.ts.slice(11, 16));
     const ob = base(v => Math.round(v).toLocaleString("de-DE"));
-    ob.scales.x.stacked = true; ob.scales.y.stacked = true;
+    ob.scales.y.beginAtZero = true;
     ob.plugins.legend = {display: true, labels: {color: css("--text-2"), boxWidth: 12}};
-    charts.push(new Chart($("sr" + ti), {type: "bar", data: {labels: sl, datasets: [
-      {label: "verschwunden", data: t.sales.per_run.map(r => -r.gone), backgroundColor: css("--up")},
-      {label: "wieder frei", data: t.sales.per_run.map(r => r.back), backgroundColor: css("--down")}]}, options: ob}));
+    let cg = 0, cb = 0;
+    const cumGone = t.sales.per_run.map(r => (cg += r.gone)), cumBack = t.sales.per_run.map(r => (cb += r.back));
+    charts.push(new Chart($("sr" + ti), {type: "line", data: {labels: sl, datasets: [
+      {label: "verschwunden gesamt", data: cumGone, borderColor: css("--up"), backgroundColor: css("--up"), stepped: true},
+      {label: "wieder frei gesamt", data: cumBack, borderColor: css("--down"), backgroundColor: css("--down"), stepped: true}]}, options: ob}));
     const oc = base(v => Math.round(v).toLocaleString("de-DE"));
     oc.scales.y.beginAtZero = true;
     oc.plugins.legend = {display: true, labels: {color: css("--text-2"), boxWidth: 12}};
