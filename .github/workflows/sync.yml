@@ -1,7 +1,5 @@
-name: AIDA-Abruf
-# Stündlich 8–20 Uhr deutscher Zeit (zwei Cron-Zeilen für Sommer-/Winterzeit, ci/slot.py wählt).
-# Um 8 Uhr zusätzlich: Katalog (täglich Liste + geänderte Details, montags komplett) und die
-# freien Kabinen aller Reisen der nächsten 4 Monate. Daten liegen im privaten Repo aida-daten.
+name: Sync
+# Stündlich 8–20 Uhr deutscher Zeit; einmal täglich zusätzlich der große Abgleich.
 on:
   schedule:
     - cron: "7 6-18 * * *"
@@ -12,7 +10,7 @@ on:
         description: "trips | daily | weekly | catalog | fleet"
         default: trips
 concurrency:
-  group: aida-abruf
+  group: sync
   cancel-in-progress: false
 permissions:
   contents: write
@@ -51,6 +49,6 @@ jobs:
         run: |
           if [ "$(date +%d)" = "01" ] || [ ! -f .keepalive ]; then
             date -Iseconds > .keepalive
-            git config user.name "aida-abruf"; git config user.email "aida-abruf@users.noreply.github.com"
+            git config user.name "sync"; git config user.email "sync@users.noreply.github.com"
             git add .keepalive && git commit -q -m "Lebenszeichen" && git push -q || true
           fi

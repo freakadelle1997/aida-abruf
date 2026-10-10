@@ -36,8 +36,8 @@ fi
 python export.py daten
 
 cd "$ROOT"
-git config user.name "aida-abruf"
-git config user.email "aida-abruf@users.noreply.github.com"
+git config user.name "sync"
+git config user.email "sync@users.noreply.github.com"
 for p in data latest trips.json people.json decks venues ships ports.json catalog.json catalog-history changes fleet README.md; do
     [[ -e "$p" ]] && git add "$p"
 done
