@@ -69,7 +69,7 @@ def aida_session(entry_url):
                 """async ([path, body]) => {
                     const opt = body === null ? {} : {method: 'POST',
                         headers: {'content-type': 'application/json'}, body: JSON.stringify(body)};
-                    const r = await fetch(path, opt);
+                    const r = await fetch(path, Object.assign(opt, {signal: AbortSignal.timeout(45000)}));
                     return {status: r.status, text: await r.text()};
                 }""", [path, body])
             if r["status"] != 200:
@@ -91,7 +91,8 @@ def aida_session(entry_url):
                         while (i < paths.length) {
                             const p = paths[i++];
                             try {
-                                const r = await fetch(p, {headers: {accept: 'application/json'}});
+                                // höchstens 30 s pro Anfrage, sonst hängt der ganze Lauf an einer Antwort
+                                const r = await fetch(p, {headers: {accept: 'application/json'}, signal: AbortSignal.timeout(30000)});
                                 if (r.status !== 200) out[p] = 'HTTP ' + r.status;
                                 else if (reduce) out[p] = JSON.stringify(reduce(await r.json()));
                                 else out[p] = await r.text();
@@ -123,7 +124,7 @@ def aida_session(entry_url):
                             const [k, p, body] = items[i++];
                             try {
                                 const r = await fetch(p, {method: 'POST', headers: {'content-type': 'application/json'},
-                                                          body: JSON.stringify(body)});
+                                                          body: JSON.stringify(body), signal: AbortSignal.timeout(30000)});
                                 out[k] = r.status === 200 ? await r.text() : 'HTTP ' + r.status;
                             } catch (e) { out[k] = 'ERR ' + e; }
                             await new Promise(ok => setTimeout(ok, delay * 1000 * (1 + Math.random() / 2)));
