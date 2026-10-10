@@ -67,6 +67,8 @@ def main():
     added, removed = [], []
     for k in keys:
         name = k["name"]
+        if name.startswith("status:"):   # Fortschritt des Abgleichs, keine Einreichung
+            continue
         try:
             raw = _api("GET", f"{base}/values/{name}", cred)
         except Exception as e:

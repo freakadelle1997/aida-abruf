@@ -8,6 +8,7 @@
     .venv/bin/python run.py --fleet             # freie Kabinen aller Reisen der nächsten 4 Monate
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -118,6 +119,12 @@ def run_catalog(incremental=False):
     prev = {t["id"]: t for t in json.loads(old_f.read_text())["trips"]} if old_f.exists() else {}
     url = "https://aida.de/finden/NO07261121/PREMIUM?pax[adults]=2"
     trips, total, todo = None, 0, None
+    part_f = d / "catalog-partial.json"   # Zwischenstand der Details (Wiederaufnahme nach Abbruch)
+
+    def checkpoint():
+        det = {j: {k: t[k] for k in DETAIL_KEYS if k in t} for j, t in (trips or {}).items() if "tariffs" in t}
+        write_atomic(part_f, json.dumps({"date": date.today().isoformat(), "details": det},
+                                        ensure_ascii=False, separators=(",", ":")))
     for attempt in range(1, 5):          # Browser-Abbruch -> neues Fenster, weiter beim letzten Stand
         try:
             with aida.aida_session(url) as call:
@@ -133,12 +140,28 @@ def run_catalog(incremental=False):
                             else:
                                 todo.append(j)
                         todo.sort()
+                    # Wiederaufnahme: Details aus dem heutigen Zwischenstand übernehmen
+                    if part_f.exists():
+                        pt = json.loads(part_f.read_text())
+                        if pt.get("date") == date.today().isoformat():
+                            for j, det in pt["details"].items():
+                                if j in trips:
+                                    trips[j].update(det)
+                            todo = [j for j in todo if j not in pt["details"]]
                     print(f"Katalog: {len(trips)} Reisen, Details für {len(todo)}", flush=True)
+                    print(f"  Details 0/{len(todo)}", flush=True)
                 done = []
+
+                def log(m, _n=[0]):
+                    print(m, flush=True)
+                    if len(done) - _n[0] >= 200:      # Zwischenstand alle 200 Reisen sichern
+                        _n[0] = len(done)
+                        checkpoint()
                 try:
-                    aida.catalog_details(call, trips, todo, log=lambda m: print(m, flush=True), done=done)
+                    aida.catalog_details(call, trips, todo, log=log, done=done)
                 finally:
                     todo = [j for j in todo if j not in set(done)]
+                    checkpoint()
             break
         except Exception as e:
             print(f"Katalog Versuch {attempt}: {e}", file=sys.stderr, flush=True)
@@ -166,7 +189,9 @@ def run_catalog(incremental=False):
         (d / "changes").mkdir(exist_ok=True)
         (d / "changes" / f"katalog-{ch['date']}.json").write_text(json.dumps(ch, ensure_ascii=False, indent=1))
         print(f"Katalog-Änderungen: {len(ch['new'])} neu, {len(ch['gone'])} entfallen, {len(ch['price'])} Preise")
-    old_f.write_text(json.dumps(cat, ensure_ascii=False, separators=(",", ":")))
+    write_atomic(old_f, json.dumps(cat, ensure_ascii=False, separators=(",", ":")))
+    if not todo and part_f.exists():
+        part_f.unlink()                   # vollständig -> Zwischenstand nicht mehr nötig
     # Tägliche Momentaufnahme für die Zeitreihe (ab-Preis, günstigster PREMIUM ALL IN je
     # Kabinenart, Aktionen) -> daten/catalog-history/<datum>.json, wird nie überschrieben
     hist = {}
@@ -188,51 +213,44 @@ def run_catalog(incremental=False):
 FLEET_DAYS = 122   # freie Kabinen für alle Reisen, die in den nächsten ~4 Monaten starten
 
 
+def write_atomic(path, text):
+    """Datei vollständig schreiben oder gar nicht (temp + rename): eine laufende Sicherung ins
+    Daten-Repo erwischt so nie eine halb geschriebene Datei."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def run_fleet():
     """Täglich: freie Kabinen je Kategorie für alle Katalog-Reisen der nächsten 4 Monate.
     Pro Reise daten/fleet/<id>.json: counts {datum: {kat: anzahl}}, cabins (aktueller Stand),
-    moves {datum: {"+": neu frei, "-": weg}} – die Grundlage für die Freigabe-Muster."""
+    moves {datum: {"+": neu frei, "-": weg}}, prices {datum: {kat: {tarif: preis}}}.
+    Jede Gruppe von 20 Reisen wird sofort gespeichert (nichts geht bei Abbruch verloren)."""
     from datetime import timedelta
     d = daten_dir()
     cat = json.loads((d / "catalog.json").read_text())["trips"]
     lim = (date.today() + timedelta(days=FLEET_DAYS)).isoformat()
     today = date.today().isoformat()
     trips = [t for t in cat if t.get("start") and today <= t["start"] <= lim and t.get("var")]
-    print(f"Flotte: {len(trips)} Reisen bis {lim}", flush=True)
-    aida.SUBCAT_CACHE = str(d / "ships")
-    res, prices = {}, {}
-    url = "https://aida.de/finden/NO07261121/PREMIUM?pax[adults]=2"
-    todo = list(trips)
-    for attempt in range(1, 4):
-        try:
-            with aida.aida_session(url) as call:
-                while todo:
-                    part, todo = todo[:20], todo[20:]
-                    res.update(aida.fleet_free(call, part, log=lambda m: print(m, flush=True)))
-                    try:
-                        for j, pc in aida.fleet_prices(call, [t["id"] for t in part],
-                                                       log=lambda m: print(m, flush=True)).items():
-                            prices[j] = pc
-                    except aida.AidaError as e:
-                        print(f"Preise: {e}", flush=True)
-            break
-        except aida.CabinSelectionClosed as e:
-            print(f"Flotte abgebrochen: {e}", flush=True)
-            break
-        except Exception as e:
-            print(f"Flotte Versuch {attempt}: {e}", file=sys.stderr, flush=True)
-            time.sleep(20)
     fd = d / "fleet"
     fd.mkdir(exist_ok=True)
+    # heute schon erledigte Reisen überspringen (Wiederaufnahme nach Abbruch)
+    done_today = {f.stem for f in fd.glob("*.json") if today in (json.loads(f.read_text()).get("counts") or {})}
+    todo = [t for t in trips if t["id"] not in done_today]
+    print(f"Flotte: {len(trips)} Reisen bis {lim}, offen {len(todo)}", flush=True)
+    aida.SUBCAT_CACHE = str(d / "ships")
     stamp = datetime.now().isoformat(timespec="minutes")
     # Tageszusammenfassung fürs Dashboard: verschwundene/zurückgekehrte Kabinen und ihr Wert,
     # nur in Kategorien unter 100 (darüber verschiebt sich nur AIDAs sichtbares Fenster)
     summ = {"ts": stamp, "trips": 0, "free": 0, "sold": 0, "back": 0, "sold_value": 0.0, "back_value": 0.0,
             "unpriced": 0, "by_ship": {}, "by_trip": {}}
-    for t in trips:
-        cats = res.get(t["id"])
-        if not cats:
-            continue
+    dd = d / "dashboard"
+    dd.mkdir(exist_ok=True)
+    df = dd / f"flotte-{today}.json"
+    runs_today = json.loads(df.read_text()) if df.exists() else []
+    runs_today.append(summ)
+
+    def store(t, cats, tprices):
         f = fd / f"{t['id']}.json"
         h = json.loads(f.read_text()) if f.exists() else {"journey": t["id"], "ship": t["ship"],
                                                           "start": t["start"], "counts": {}, "moves": {}}
@@ -241,10 +259,10 @@ def run_fleet():
         summ["trips"] += 1
         summ["free"] += len(new)
         if h.get("cabins") is not None:
-            pr_today = (prices.get(t["id"]) or {})
             pr_prev = (h.get("prices") or {}).get(max(h.get("prices") or {"": 0}), {}) if h.get("prices") else {}
+
             def value(code):
-                p = pr_today.get(code) or {}
+                p = tprices.get(code) or {}
                 v = p.get("IND") or (min(p.values()) if p else None)
                 if v is None:
                     q = pr_prev.get(code) or {}
@@ -273,20 +291,47 @@ def run_fleet():
             mv["+"] = sorted(set(mv["+"]) | (new - old))
             mv["-"] = sorted(set(mv["-"]) | (old - new))
         h["cabins"] = {k: v for k, v in cats.items() if v}
-        if prices.get(t["id"]):   # Preise je Unterkategorie und Tarif (Tarifnamen ausgeschrieben)
+        if tprices:   # Preise je Unterkategorie und Tarif (Tarifnamen ausgeschrieben)
             h.setdefault("prices", {})[today] = {code: {TCODE.get(tf, tf): amt for tf, amt in tp.items()}
-                                                 for code, tp in prices[t["id"]].items()}
+                                                 for code, tp in tprices.items()}
         h["updated"] = stamp
-        f.write_text(json.dumps(h, ensure_ascii=False, separators=(",", ":")))
-    print(f"Flotte: {sum(1 for t in trips if res.get(t['id']))} Reisen gespeichert", flush=True)
-    dd = d / "dashboard"
-    dd.mkdir(exist_ok=True)
-    df = dd / f"flotte-{today}.json"
-    runs_today = json.loads(df.read_text()) if df.exists() else []
-    summ["sold_value"] = round(summ["sold_value"]); summ["back_value"] = round(summ["back_value"])
-    runs_today.append(summ)
-    df.write_text(json.dumps(runs_today, ensure_ascii=False, separators=(",", ":")))
-    print(f"Flotte: {summ['sold']} Kabinen verschwunden (Wert {summ['sold_value']} €), {summ['back']} zurück", flush=True)
+        write_atomic(f, json.dumps(h, ensure_ascii=False, separators=(",", ":")))
+
+    def flush_summary():
+        out = dict(summ, sold_value=round(summ["sold_value"]), back_value=round(summ["back_value"]))
+        runs_today[-1] = out
+        write_atomic(df, json.dumps(runs_today, ensure_ascii=False, separators=(",", ":")))
+
+    url = "https://aida.de/finden/NO07261121/PREMIUM?pax[adults]=2"
+    total, n_done = len(todo), 0
+    for attempt in range(1, 4):
+        try:
+            with aida.aida_session(url) as call:
+                while todo:
+                    part = todo[:20]
+                    res = aida.fleet_free(call, part, log=lambda m: None)
+                    try:
+                        pr = aida.fleet_prices(call, [t["id"] for t in part], log=lambda m: None)
+                    except aida.AidaError as e:
+                        print(f"Preise: {e}", flush=True)
+                        pr = {}
+                    for t in part:
+                        if res.get(t["id"]):
+                            store(t, res[t["id"]], pr.get(t["id"]) or {})
+                    flush_summary()          # sofort gespeichert
+                    todo = todo[20:]
+                    n_done += len(part)
+                    print(f"  freie Kabinen {n_done}/{total}", flush=True)
+            break
+        except aida.CabinSelectionClosed as e:
+            print(f"Flotte abgebrochen: {e}", flush=True)
+            break
+        except Exception as e:
+            print(f"Flotte Versuch {attempt}: {e}", file=sys.stderr, flush=True)
+            time.sleep(20)
+    flush_summary()
+    print(f"Flotte: {summ['trips']} Reisen gespeichert, {summ['sold']} Kabinen verschwunden "
+          f"(Wert {round(summ['sold_value'])} €), {summ['back']} zurück", flush=True)
 
 
 def main(force=False, only=None):

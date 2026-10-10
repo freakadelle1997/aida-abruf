@@ -732,6 +732,16 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .dlg .msg { font-size: 13px; margin-top: 12px; min-height: 18px; }
 .pending { background: color-mix(in srgb, var(--s4) 14%, transparent); border-radius: 10px;
   padding: 12px 14px; margin-bottom: 18px; font-size: 14px; }
+.runbox { margin-left: auto; margin-right: 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 8px 12px; min-width: 260px; max-width: 360px; align-self: center; }
+.runbox .rtop { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.runbox #runpct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.runbox .rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--s1); animation: rpulse 1.2s infinite; }
+@keyframes rpulse { 50% { opacity: .25; } }
+.runbox .rbar { height: 6px; background: color-mix(in srgb, var(--s1) 15%, transparent); border-radius: 3px; margin: 6px 0 4px; overflow: hidden; }
+.runbox #runbar { height: 100%; width: 0; background: var(--s1); transition: width .6s; }
+.runbox .rsub { font-size: 11.5px; color: var(--text-2); }
+@media (max-width: 760px) { .runbox { order: 3; margin: 10px 0 0; max-width: none; width: 100%; } }
 .tabs { display: flex; gap: 4px; margin: -6px 0 20px; border-bottom: 1px solid var(--border); }
 .tabs a { padding: 9px 14px; color: var(--text-2); text-decoration: none; font-weight: 600; font-size: 14px;
   border-bottom: 2px solid transparent; margin-bottom: -1px; }
@@ -858,6 +868,10 @@ tr.cabrow td { background: color-mix(in srgb, var(--s1) 6%, transparent); white-
 <main>
 <div class="topbar">
   <div><h1>AIDA Buchungslage</h1><p class="sub" id="sub"></p></div>
+  <div class="runbox" id="runbox" hidden>
+    <div class="rtop"><span class="rdot"></span><span id="runphase">Abgleich läuft</span><span id="runpct"></span></div>
+    <div class="rbar"><div id="runbar"></div></div>
+    <div class="rsub" id="runsub"></div></div>
   <div class="timer" id="timer" title="Zeit bis zur nächsten automatischen Abfrage">
     <div class="tlabel">Nächste Abfrage in</div><div class="tval" id="timerval">–</div></div>
 </div>
@@ -1679,6 +1693,32 @@ function inWindow(now = new Date()) {
   return h >= 8 && h <= 20 && m < 5;
 }
 setInterval(() => { if (inWindow() || (pendingReload && !busy())) checkVersion(); }, 10000);
+
+// Fortschritt des laufenden Abgleichs (vom GitHub-Lauf nach Cloudflare gemeldet) oben anzeigen
+let runActive = false, runWatchUntil = 0;
+async function checkRun() {
+  if (document.hidden) return;
+  let st = {};
+  try { const r = await fetch("/api/progress", {cache: "no-store", credentials: "include"}); if (r.ok) st = await r.json(); } catch {}
+  const fresh = st.updated && (Date.now() - new Date(st.updated).getTime()) < 20 * 60e3;
+  const box = $("runbox");
+  if (st.state === "running" && fresh) {
+    runActive = true;
+    box.hidden = false;
+    const pct = st.total ? Math.round(100 * st.done / st.total) : null;
+    $("runphase").textContent = "Abgleich läuft · " + (st.phase || "");
+    $("runpct").textContent = st.total ? `${st.done.toLocaleString("de-DE")} / ${st.total.toLocaleString("de-DE")} (${pct} %)` : "";
+    $("runbar").style.width = (pct ?? 0) + "%";
+    const mins = Math.round((Date.now() - new Date(st.started).getTime()) / 60e3);
+    $("runsub").textContent = `${({trips: "Hinterlegte Reisen", daily: "Tageslauf", weekly: "Wochenlauf (komplett)", catalog: "Katalog", fleet: "4-Monats-Reisen"})[st.mode] || st.mode} · seit ${mins} Min.`;
+  } else {
+    box.hidden = true;
+    if (runActive) { runActive = false; runWatchUntil = Date.now() + 5 * 60e3; }   // fertig -> neue Daten holen
+  }
+  if (runWatchUntil > Date.now()) checkVersion();
+}
+checkRun();
+setInterval(checkRun, 10000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkVersion(); });
 function restoreScroll() {
   try {

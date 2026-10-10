@@ -22,7 +22,7 @@ export async function onRequestPost({ request, env }) {
     const r = await env.ASSETS.fetch(new URL("/tracked.json", request.url));
     if (r.ok) tracked = await r.json();
   } catch {}
-  const keys = (await env.SUBMISSIONS.list()).keys.map(k => k.name);
+  const keys = (await env.SUBMISSIONS.list()).keys.map(k => k.name).filter(k => !k.startsWith("status:"));
   const adds = keys.filter(k => !k.startsWith("remove:") && !tracked.includes(k));
   const removes = keys.filter(k => k.startsWith("remove:") && tracked.includes(k.slice(7)));
   const count = tracked.length + adds.length - removes.length;
