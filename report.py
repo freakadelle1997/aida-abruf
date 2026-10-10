@@ -540,8 +540,10 @@ def build(con=None):
                 b = byid.get(p["id"], {})
                 p.update(title=b.get("title"), ship=b.get("ship"), start=b.get("start"))
     (OUT.parent / "tracked.json").write_text(json.dumps(list(focus) or journeys))
+    build_id = datetime.now().isoformat(timespec="seconds")
+    (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
     _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
-    html = TEMPLATE.replace("__DATA__", json.dumps({"trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
+    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
     OUT.write_text(html)
@@ -1525,6 +1527,39 @@ function renderAend() {
       ${cc.gone.length ? `<h3 style="font-size:15px">Entfallen (ausgebucht oder abgesagt)</h3><table class="chg">${cc.gone.map(r => `<tr><td>${r.id}</td></tr>`).join("")}</table>` : ""}`);
 }
 
+// Selbst aktualisieren: jede Minute prüfen, ob ein neuer Datenstand veröffentlicht wurde, dann
+// neu laden (Ansicht und Scrollposition bleiben). Nicht, solange 3D-Plan oder Dialog offen sind.
+let pendingReload = false;
+function busy() {
+  const d3 = document.getElementById("deck3d"), dlg = document.getElementById("adddlg");
+  return (d3 && !d3.hidden) || (dlg && dlg.open);
+}
+function doReload() {
+  try { sessionStorage.setItem("aida-scroll", JSON.stringify({h: location.hash, y: scrollY})); } catch {}
+  location.reload();
+}
+async function checkVersion() {
+  if (pendingReload) { if (!busy()) doReload(); return; }
+  try {
+    const r = await fetch("version.json?t=" + Date.now(), {cache: "no-store", credentials: "include"});
+    if (!r.ok) return;
+    const v = await r.json();
+    if (v.build && DATA.build && v.build !== DATA.build) {
+      pendingReload = true;
+      if (!busy()) doReload();
+    }
+  } catch {}
+}
+setInterval(checkVersion, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkVersion(); });
+function restoreScroll() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem("aida-scroll") || "null");
+    sessionStorage.removeItem("aida-scroll");
+    if (s && s.h === location.hash) setTimeout(() => scrollTo(0, s.y), 300);
+  } catch {}
+}
+
 function showView(v) {
   ["list", "detail", "katalog", "aend"].forEach(id => { $(id).style.display = id === v ? "" : "none"; });
   document.querySelectorAll(".tabs a").forEach(a => a.classList.toggle("on", a.dataset.v === v || (v === "detail" && a.dataset.v === "list")));
@@ -1537,6 +1572,7 @@ function route() {
   if (m && DATA.trips[+m[1]]) { showView("detail"); renderDetail(+m[1]); } else { showView("list"); renderList(); }
 }
 window.addEventListener("hashchange", route);
+setTimeout(restoreScroll, 0);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", route);
 route();
 </script>
