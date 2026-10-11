@@ -1134,8 +1134,13 @@ async function tripCharts(el, id, prefer) {
   const types = [...new Set([...Object.keys(h.g).filter(g => g.length === 1), ...cats.map(typeOf)])]
     .sort((a, b) => "IMBVKPDJS".indexOf(a) - "IMBVKPDJS".indexOf(b));
   const tarifsAll = TARIF_ORDER.filter(tf => Object.values(h.g).some(g => g[tf]));
-  // Voreinstellung: alle Typen (günstigste) + Wunschkategorie, PREMIUM ALL IN
-  const st = {types: new Set(types), cheapest: true, cats: new Set(prefer && cats.includes(prefer) ? [prefer] : []),
+  // Preisstufe einer Kategorie: 1I/1B = Einzel, sonst 2. Buchstabe (IA -> A, BB -> B, VC -> C, IV -> V = Garantie)
+  const tierOf = c => c[0] === "1" ? "1" : c.slice(1);
+  const TIER_NAME = {"1": "Einzel", A: "A · bevorzugte Lage", B: "B · Standard", C: "C · für Preisbewusste", V: "Garantie (CLASSIC)"};
+  const tiers = [...new Set(cats.map(tierOf))].sort((a, b) => (a === "1" ? -1 : b === "1" ? 1 : a === "V" ? 1 : b === "V" ? -1 : a.localeCompare(b)));
+  // Voreinstellung: Typ und Stufe der Wunschkategorie (z. B. Innen + A = IA), PREMIUM ALL IN
+  const pf = prefer && cats.includes(prefer) ? prefer : null;
+  const st = {types: new Set(pf ? [typeOf(pf)] : types), cheapest: true, tiers: new Set(pf ? [tierOf(pf)] : []),
               tarifs: new Set(tarifsAll.includes("PREMIUM ALL IN") ? ["PREMIUM ALL IN"] : tarifsAll.slice(0, 1))};
   const tName = t => TYPE_NAME[t] || t;
   const cName = c => `${tName(typeOf(c))} · ${c}${meta[c] ? " " + meta[c][1] : ""}`;
@@ -1147,7 +1152,7 @@ async function tripCharts(el, id, prefer) {
     // Gruppen = gewählte Typen (günstigste) und gewählte Kategorien der gewählten Typen
     const groups = [];
     if (st.cheapest) types.filter(t => st.types.has(t)).forEach(t => groups.push({key: t, label: tName(t) + " · günstigste"}));
-    cats.filter(c => st.cats.has(c) && st.types.has(typeOf(c))).forEach(c => groups.push({key: c, label: cName(c)}));
+    cats.filter(c => st.tiers.has(tierOf(c)) && st.types.has(typeOf(c))).forEach(c => groups.push({key: c, label: cName(c)}));
     groups.forEach((g, i) => g.col = SERIES_COL[i % SERIES_COL.length]);
     const sel = tarifsAll.filter(tf => st.tarifs.has(tf));
     const pSets = [];
@@ -1162,11 +1167,11 @@ async function tripCharts(el, id, prefer) {
       fSets.push({label: g.key.length === 1 ? tName(g.key) + " · alle Kategorien" : cName(g.key), data,
                   borderColor: css(g.col), backgroundColor: css(g.col), spanGaps: true, stepped: true});
     });
-    const visCats = cats.filter(c => st.types.has(typeOf(c)));
+    const visTiers = tiers.filter(t => cats.some(c => tierOf(c) === t && st.types.has(typeOf(c))));
     el.innerHTML = `
       <div class="chiprow"><span class="chiplab">Kabinentyp</span>${types.map(t => chip("type", t, tName(t), st.types.has(t))).join("")}</div>
-      <div class="chiprow"><span class="chiplab">Kategorie</span>${chip("cheap", "1", "günstigste je Typ", st.cheapest)}${visCats.map(c =>
-        chip("cat", c, c + (meta[c] ? " " + meta[c][1] : ""), st.cats.has(c))).join("")}</div>
+      <div class="chiprow"><span class="chiplab">Kategorie</span>${chip("cheap", "1", "günstigste je Typ", st.cheapest)}${visTiers.map(t =>
+        chip("tier", t, TIER_NAME[t] || t, st.tiers.has(t))).join("")}</div>
       <div class="chiprow"><span class="chiplab">Tarif</span>${tarifsAll.map(tf => chip("tarif", tf, tf, st.tarifs.has(tf), TARIF_COL[tf])).join("")}</div>
       <div class="chart" style="margin-top:10px"><h3>Preis je Kabine (2 Erw., ohne Flug) · ${pSets.length} Linie${pSets.length === 1 ? "" : "n"} · Farbe = Kabinentyp/Kategorie, Linienart = Tarif</h3>
         <div class="box" style="height:340px">${pSets.length ? '<canvas data-c="p"></canvas>' : '<p class="mut" style="padding:20px 0">Keine Preise für diese Auswahl.</p>'}</div></div>
@@ -1175,7 +1180,7 @@ async function tripCharts(el, id, prefer) {
       <p class="note" style="margin-top:4px">Linienart je Tarif: durchgezogen = PREMIUM ALL IN, gestrichelt = PREMIUM, gepunktet = CLASSIC ALL IN, Strich-Punkt = CLASSIC, lang gestrichelt = COMFORT ALL IN, weit gepunktet = LIGHT. Klick auf einen Legendeneintrag blendet die Linie aus/ein. „alle Kategorien“ bei freien Kabinen = Summe der Kategorien des Typs (je Kategorie zeigt AIDA höchstens 100).</p>`;
     el.querySelectorAll(".tchip").forEach(b => b.onclick = () => {
       const {k, v} = b.dataset;
-      const set = {type: st.types, cat: st.cats, tarif: st.tarifs}[k];
+      const set = {type: st.types, tier: st.tiers, tarif: st.tarifs}[k];
       if (k === "cheap") st.cheapest = !st.cheapest; else set.has(v) ? set.delete(v) : set.add(v);
       render();
     });
