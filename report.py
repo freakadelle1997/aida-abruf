@@ -860,6 +860,8 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
   padding: 10px; max-height: 520px; overflow: auto; white-space: pre-wrap; margin: 10px 0 0; }
 .logerr { color: var(--up); font-weight: 600; }
 .tchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chiprow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
+.chiplab { font-size: 12px; color: var(--text-2); width: 76px; flex: 0 0 auto; }
 .tchip { border: 1.5px solid var(--c); color: var(--text); background: none; border-radius: 14px; padding: 3px 10px;
   font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; opacity: .55; }
 .tchip.on { background: color-mix(in srgb, var(--c) 22%, transparent); opacity: 1; }
@@ -1116,6 +1118,9 @@ const TARIF_COL = {"LIGHT": "--s5", "CLASSIC": "--s3", "CLASSIC ALL IN": "--s7",
 const TYPE_NAME = {I: "Innen", M: "Meerblick", B: "Balkon", V: "Veranda", K: "Veranda Komfort", P: "Panorama",
   D: "Veranda Deluxe", J: "Junior-Suite", S: "Suite", C: "Innen (Komfort)"};
 const PH = {};
+const SERIES_COL = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+const TARIF_DASH = {"PREMIUM ALL IN": [], "PREMIUM": [6, 4], "CLASSIC ALL IN": [2, 3], "CLASSIC": [10, 4, 2, 4],
+  "COMFORT ALL IN": [14, 5], "LIGHT": [2, 7]};
 async function tripCharts(el, id, prefer) {
   if (!el) return;
   try {
@@ -1123,56 +1128,68 @@ async function tripCharts(el, id, prefer) {
     if (!r.ok) { el.innerHTML = `<p class="mut">Noch keine Verlaufsdaten – entstehen ab dem nächsten Tageslauf (8 Uhr).</p>`; return; }
     PH[id] = await r.json();
   } catch { return; }
-  const h = PH[id], meta = h.c || {};
+  const h = PH[id], meta = h.c || {}, F = h.f || {};
   const typeOf = g => g.length === 1 ? g : ((meta[g] || [])[0] || g[0]);
-  const cats = [...new Set([...Object.keys(h.g), ...Object.keys(h.f || {})].filter(g => g.length > 1))];
+  const cats = [...new Set([...Object.keys(h.g), ...Object.keys(F)].filter(g => g.length > 1))].sort();
   const types = [...new Set([...Object.keys(h.g).filter(g => g.length === 1), ...cats.map(typeOf)])]
     .sort((a, b) => "IMBVKPDJS".indexOf(a) - "IMBVKPDJS".indexOf(b));
-  const st = {type: prefer ? typeOf(prefer) : (types[0] || "I"), cat: prefer && cats.includes(prefer) ? prefer : "", tarifs: new Set(["PREMIUM ALL IN"])};
-  if (!types.includes(st.type)) st.type = types[0];
-  const catLabel = c => c ? `${c}${meta[c] ? " " + meta[c][1] : ""}` : "alle Kategorien (günstigste)";
+  const tarifsAll = TARIF_ORDER.filter(tf => Object.values(h.g).some(g => g[tf]));
+  // Voreinstellung: alle Typen (günstigste) + Wunschkategorie, PREMIUM ALL IN
+  const st = {types: new Set(types), cheapest: true, cats: new Set(prefer && cats.includes(prefer) ? [prefer] : []),
+              tarifs: new Set(tarifsAll.includes("PREMIUM ALL IN") ? ["PREMIUM ALL IN"] : tarifsAll.slice(0, 1))};
+  const tName = t => TYPE_NAME[t] || t;
+  const cName = c => `${tName(typeOf(c))} · ${c}${meta[c] ? " " + meta[c][1] : ""}`;
   const lab = h.x.map(x => d(x.slice(0, 10)).slice(0, 6) + (x.length > 10 ? " " + x.slice(11, 16) : ""));
   let chP = null, chF = null;
+  const chip = (kind, val, label, on, col) =>
+    `<button class="tchip${on ? " on" : ""}" data-k="${kind}" data-v="${val}" style="--c:var(${col || "--s6"})">${label}</button>`;
   const render = () => {
-    const catsOfType = cats.filter(c => typeOf(c) === st.type).sort();
-    if (st.cat && !catsOfType.includes(st.cat)) st.cat = "";
-    const key = st.cat || st.type;
-    const avail = TARIF_ORDER.filter(tf => (h.g[key] || {})[tf]);
-    if (![...st.tarifs].some(tf => avail.includes(tf))) st.tarifs = new Set(avail.includes("PREMIUM ALL IN") ? ["PREMIUM ALL IN"] : avail.slice(0, 1));
-    const sel = avail.filter(tf => st.tarifs.has(tf));
-    const freeSeries = st.cat ? (h.f || {})[st.cat]
-      : (catsOfType.some(c => (h.f || {})[c]) ? h.x.map((_, i) => catsOfType.reduce((s, c) => {
-          const v = ((h.f || {})[c] || [])[i]; return v == null ? s : (s ?? 0) + v; }, null)) : null);
-    const title = `${TYPE_NAME[st.type] || st.type} · ${catLabel(st.cat)}`;
-    el.innerHTML = `<div class="filters" style="margin:0 0 6px">
-        <label>Kabinentyp<select data-s="type">${types.map(t => `<option value="${t}"${t === st.type ? " selected" : ""}>${TYPE_NAME[t] || t}</option>`).join("")}</select></label>
-        <label>Kategorie<select data-s="cat"><option value="">alle (günstigste)</option>${catsOfType.map(c => `<option value="${c}"${c === st.cat ? " selected" : ""}>${catLabel(c)}</option>`).join("")}</select></label>
-      </div>
-      <div class="tchips">${avail.map(tf => `<button class="tchip${st.tarifs.has(tf) ? " on" : ""}" data-t="${tf}" style="--c:var(${TARIF_COL[tf] || "--s6"})">${tf}</button>`).join("") || '<span class="mut">keine Preise für diese Auswahl</span>'}</div>
-      <div class="charts" style="margin-top:10px">
-        <div class="chart"><h3>Preis · ${title} · ${sel.join(", ") || "–"}</h3><div class="box"><canvas data-c="p"></canvas></div></div>
-        <div class="chart"><h3>Freie Kabinen · ${title}</h3><div class="box">${freeSeries ? '<canvas data-c="f"></canvas>' : '<p class="mut" style="padding:20px 0">Für diese Reise/Auswahl werden keine freien Kabinen erfasst (nur hinterlegte Reisen und Reisen der nächsten 4 Monate).</p>'}</div></div>
-      </div>
-      <p class="note" style="margin-top:4px">Preis je Kabine für 2 Erwachsene ohne Flug. „alle (günstigste)“ = günstigste Kategorie des Typs; freie Kabinen dann summiert über alle Kategorien des Typs (je Kategorie zeigt AIDA höchstens 100).</p>`;
-    el.querySelector('[data-s="type"]').onchange = e => { st.type = e.target.value; st.cat = ""; render(); };
-    el.querySelector('[data-s="cat"]').onchange = e => { st.cat = e.target.value; render(); };
+    // Gruppen = gewählte Typen (günstigste) und gewählte Kategorien der gewählten Typen
+    const groups = [];
+    if (st.cheapest) types.filter(t => st.types.has(t)).forEach(t => groups.push({key: t, label: tName(t) + " · günstigste"}));
+    cats.filter(c => st.cats.has(c) && st.types.has(typeOf(c))).forEach(c => groups.push({key: c, label: cName(c)}));
+    groups.forEach((g, i) => g.col = SERIES_COL[i % SERIES_COL.length]);
+    const sel = tarifsAll.filter(tf => st.tarifs.has(tf));
+    const pSets = [];
+    groups.forEach(g => sel.forEach(tf => { const v = (h.g[g.key] || {})[tf]; if (v && v.some(x => x != null))
+      pSets.push({label: `${g.label} · ${tf}`, data: v, borderColor: css(g.col), backgroundColor: css(g.col),
+                  borderDash: TARIF_DASH[tf] || [], borderWidth: tf === "PREMIUM ALL IN" ? 2.5 : 1.8, spanGaps: true, stepped: true}); }));
+    const fSets = [];
+    groups.forEach(g => {
+      const keys = g.key.length === 1 ? cats.filter(c => typeOf(c) === g.key && F[c]) : (F[g.key] ? [g.key] : []);
+      if (!keys.length) return;
+      const data = h.x.map((_, i) => keys.reduce((s, c) => { const v = F[c][i]; return v == null ? s : (s ?? 0) + v; }, null));
+      fSets.push({label: g.key.length === 1 ? tName(g.key) + " · alle Kategorien" : cName(g.key), data,
+                  borderColor: css(g.col), backgroundColor: css(g.col), spanGaps: true, stepped: true});
+    });
+    const visCats = cats.filter(c => st.types.has(typeOf(c)));
+    el.innerHTML = `
+      <div class="chiprow"><span class="chiplab">Kabinentyp</span>${types.map(t => chip("type", t, tName(t), st.types.has(t))).join("")}</div>
+      <div class="chiprow"><span class="chiplab">Kategorie</span>${chip("cheap", "1", "günstigste je Typ", st.cheapest)}${visCats.map(c =>
+        chip("cat", c, c + (meta[c] ? " " + meta[c][1] : ""), st.cats.has(c))).join("")}</div>
+      <div class="chiprow"><span class="chiplab">Tarif</span>${tarifsAll.map(tf => chip("tarif", tf, tf, st.tarifs.has(tf), TARIF_COL[tf])).join("")}</div>
+      <div class="chart" style="margin-top:10px"><h3>Preis je Kabine (2 Erw., ohne Flug) · ${pSets.length} Linie${pSets.length === 1 ? "" : "n"} · Farbe = Kabinentyp/Kategorie, Linienart = Tarif</h3>
+        <div class="box" style="height:340px">${pSets.length ? '<canvas data-c="p"></canvas>' : '<p class="mut" style="padding:20px 0">Keine Preise für diese Auswahl.</p>'}</div></div>
+      <div class="chart" style="margin-top:14px"><h3>Freie Kabinen · ${fSets.length} Linie${fSets.length === 1 ? "" : "n"}</h3>
+        <div class="box" style="height:260px">${fSets.length ? '<canvas data-c="f"></canvas>' : '<p class="mut" style="padding:20px 0">Freie Kabinen werden nur für hinterlegte Reisen und Reisen der nächsten 4 Monate erfasst.</p>'}</div></div>
+      <p class="note" style="margin-top:4px">Linienart je Tarif: durchgezogen = PREMIUM ALL IN, gestrichelt = PREMIUM, gepunktet = CLASSIC ALL IN, Strich-Punkt = CLASSIC, lang gestrichelt = COMFORT ALL IN, weit gepunktet = LIGHT. Klick auf einen Legendeneintrag blendet die Linie aus/ein. „alle Kategorien“ bei freien Kabinen = Summe der Kategorien des Typs (je Kategorie zeigt AIDA höchstens 100).</p>`;
     el.querySelectorAll(".tchip").forEach(b => b.onclick = () => {
-      const tf = b.dataset.t; st.tarifs.has(tf) ? st.tarifs.delete(tf) : st.tarifs.add(tf); render(); });
+      const {k, v} = b.dataset;
+      const set = {type: st.types, cat: st.cats, tarif: st.tarifs}[k];
+      if (k === "cheap") st.cheapest = !st.cheapest; else set.has(v) ? set.delete(v) : set.add(v);
+      render();
+    });
     const opts = (fmt, zero) => ({responsive: true, maintainAspectRatio: false, animation: false,
-      interaction: {mode: "index", intersect: false},
-      plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
+      interaction: {mode: "nearest", axis: "x", intersect: false},
+      plugins: {legend: {display: true, position: "bottom", labels: {color: css("--text-2"), boxWidth: 26, boxHeight: 2, font: {size: 11}}},
+        tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}`}}},
       scales: {x: {grid: {display: false}, ticks: {color: css("--text-2"), maxTicksLimit: 12}},
                y: {beginAtZero: zero, grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => fmt(v)}}},
-      elements: {line: {borderWidth: 2, tension: 0}, point: {radius: h.x.length > 24 ? 0 : 3}}});
-    if (chP) chP.destroy(); if (chF) chF.destroy();
-    chP = new Chart(el.querySelector('[data-c="p"]'), {type: "line", data: {labels: lab, datasets: sel.map(tf => ({
-      label: tf, data: h.g[key][tf], borderColor: css(TARIF_COL[tf] || "--s6"), backgroundColor: css(TARIF_COL[tf] || "--s6"),
-      spanGaps: true, stepped: true}))}, options: opts(v => eur(v), false)});
-    charts.push(chP);
-    const fc = el.querySelector('[data-c="f"]');
-    if (fc) { chF = new Chart(fc, {type: "line", data: {labels: lab, datasets: [{label: "frei", data: freeSeries,
-      borderColor: css("--s1"), backgroundColor: css("--s1"), spanGaps: true, stepped: true}]}, options: opts(v => Math.round(v).toLocaleString("de-DE"), true)});
-      charts.push(chF); }
+      elements: {line: {tension: 0}, point: {radius: h.x.length > 24 ? 0 : 2}}});
+    if (chP) chP.destroy(); if (chF) chF.destroy(); chP = chF = null;
+    const pc = el.querySelector('[data-c="p"]'), fc = el.querySelector('[data-c="f"]');
+    if (pc) { chP = new Chart(pc, {type: "line", data: {labels: lab, datasets: pSets}, options: opts(v => eur(v), false)}); charts.push(chP); }
+    if (fc) { chF = new Chart(fc, {type: "line", data: {labels: lab, datasets: fSets}, options: opts(v => Math.round(v).toLocaleString("de-DE"), true)}); charts.push(chF); }
   };
   render();
 }
