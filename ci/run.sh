@@ -22,6 +22,12 @@ echo "=== $(date '+%F %T') Modus $MODE ==="
 # Fortschritt: Zählerzeilen (ohne Reisenamen) live ins öffentliche Protokoll und auf die Seite
 cp "$CODE/ci/progress.py" "$RT/ci_progress.py"
 progress() { python -u ci_progress.py pipe "$TMPLOG"; }
+# Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
+# hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
+if [[ "$MODE" == "trips" && 10#$(date +%H) -ge 8 && ! -f "$ROOT/catalog-history/$(date +%F).json" ]]; then
+    if [[ "$(date +%u)" == "1" ]]; then MODE=weekly; else MODE=daily; fi
+    echo "Heutiger Katalog fehlt noch -> Modus $MODE"
+fi
 [[ "$MODE" != "deploy" ]] && python ci_progress.py start "$MODE"
 
 # Zwischenstand sichern: nach jeder Phase ins private Daten-Repo (bei Abbruch geht nur die laufende verloren)
@@ -57,13 +63,6 @@ if [[ "$MODE" != "deploy" ]]; then
 fi
 # Beenden der Hintergrund-Sicherung darf den Lauf nie abbrechen (wait liefert nach kill Code 143)
 stop_autosave() { if [[ -n "$AUTOSAVE" ]]; then kill "$AUTOSAVE" 2>/dev/null || true; wait "$AUTOSAVE" 2>/dev/null || true; fi; AUTOSAVE=""; return 0; }
-
-# Selbstheilung: Fehlt der heutige Katalog-Stand (z. B. weil GitHub den 8-Uhr-Lauf verworfen
-# hat), holt der nächste Lauf Katalog + freie Kabinen nach – montags komplett.
-if [[ "$MODE" == "trips" && "$(date +%H)" -ge 8 && ! -f "$ROOT/catalog-history/$(date +%F).json" ]]; then
-    if [[ "$(date +%u)" == "1" ]]; then MODE=weekly; else MODE=daily; fi
-    echo "Heutiger Katalog fehlt noch -> Modus $MODE"
-fi
 
 python import_db.py daten
 if [[ "$MODE" != "deploy" ]]; then

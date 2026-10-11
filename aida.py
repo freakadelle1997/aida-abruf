@@ -279,14 +279,23 @@ def parse_itinerary(detail):
 
 
 SUBCAT_CACHE = None   # Verzeichnis für den Kategorien-Zwischenspeicher (setzt run.py)
+SUBCAT_FRESH_DAYS = 7  # so lange gilt der gespeicherte Stand, ohne AIDA zu fragen
+_SUBCAT_MEM = {}       # je Lauf: (Schiff, Variante) -> Kategorien (nur einmal holen)
 
 
-def subcategories(call, ship, variation, tries=4):
-    """Unterkategorien des Schiffs (Code -> (Gruppe, Name)). Das AIDA-GraphQL antwortet
+def subcategories(call, ship, variation, tries=3):
+    """Unterkategorien des Schiffs (Code -> (Gruppe, Name)). Pro Lauf nur einmal je Schiff;
+    ist der gespeicherte Stand frisch, wird AIDA gar nicht gefragt. Das AIDA-GraphQL antwortet
     gelegentlich mit HTTP 500: kurz wiederholen, sonst den letzten gespeicherten Stand nehmen."""
     import time
     from pathlib import Path
+    if (ship, variation) in _SUBCAT_MEM:
+        return _SUBCAT_MEM[(ship, variation)]
     cf = Path(SUBCAT_CACHE) / f"kategorien-{ship}-{variation}.json" if SUBCAT_CACHE else None
+    if cf and cf.exists() and time.time() - cf.stat().st_mtime < SUBCAT_FRESH_DAYS * 86400:
+        names = {k: tuple(v) for k, v in json.loads(cf.read_text()).items()}
+        _SUBCAT_MEM[(ship, variation)] = names
+        return names
     for k in range(tries):
         try:
             sub = call("/graphql/execute.json/global/subcategories-by-ship-and-category"
@@ -298,13 +307,16 @@ def subcategories(call, ship, variation, tries=4):
                 if cf:
                     cf.parent.mkdir(parents=True, exist_ok=True)
                     cf.write_text(json.dumps(names, ensure_ascii=False))
+                _SUBCAT_MEM[(ship, variation)] = names
                 return names
         except AidaError:
             pass
-        time.sleep(2 + 3 * k)
+        time.sleep(2 + 2 * k)
     if cf and cf.exists():
         print(f"Kategorien {ship}: GraphQL nicht erreichbar, nutze Zwischenspeicher")
-        return {k: tuple(v) for k, v in json.loads(cf.read_text()).items()}
+        names = {k: tuple(v) for k, v in json.loads(cf.read_text()).items()}
+        _SUBCAT_MEM[(ship, variation)] = names
+        return names
     raise AidaError(f"Kategorien für {ship} nicht abrufbar (GraphQL)")
 
 
