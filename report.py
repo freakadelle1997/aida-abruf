@@ -1567,10 +1567,10 @@ async function loadPending() {
 }
 
 // Countdown bis zur nächsten automatischen Abfrage (jede volle Stunde, XX:00).
-// Automatische Abfragen: stündlich 8–20 Uhr (deutsche Zeit, GitHub Actions)
+// Automatische Abfragen: stündlich 8–24 Uhr (deutsche Zeit, GitHub Actions)
 function nextQuery() {
   const now = new Date();
-  for (let add = 0; add < 2; add++) for (let h = 8; h <= 20; h++) {
+  for (let add = 0; add < 2; add++) for (let h = 8; h <= 24; h++) {
     const t = new Date(now); t.setDate(t.getDate() + add); t.setHours(h, 0, 0, 0);   // Start jeweils zur vollen Stunde (Cloudflare-Wecker)
     if (t > now) return t;
   }
@@ -1898,11 +1898,11 @@ async function checkVersion() {
     }
   } catch {}
 }
-// Nur rund um die Abrufe fragen: alle 10 s von hh:59:45 bis hh:05:00 (Läufe 8–20 Uhr).
+// Nur rund um die Abrufe fragen: alle 10 s von hh:59:45 bis hh:05:00 (Läufe 8–24 Uhr).
 function inWindow(now = new Date()) {
   const h = now.getHours(), m = now.getMinutes(), s = now.getSeconds();
-  if (m === 59 && s >= 45) return h >= 7 && h <= 19;          // kurz vor dem nächsten Lauf
-  return h >= 8 && h <= 20 && m < 5;
+  if (m === 59 && s >= 45) return h >= 7 && h <= 23;          // kurz vor dem nächsten Lauf
+  return (h >= 8 || h === 0) && m < 5;
 }
 setInterval(() => { if (inWindow() || (pendingReload && !busy())) checkVersion(); }, 10000);
 

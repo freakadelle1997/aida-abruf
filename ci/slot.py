@@ -21,7 +21,7 @@ dst = bool(now.dst())
 
 if event == "workflow_dispatch" and manual == "auto":
     # vom Cloudflare-Wecker: nur 8–20 Uhr deutscher Zeit; Katalog-Nachholen macht ci/run.sh
-    run, mode = ("yes" if 8 <= now.hour <= 20 else "no"), "trips"
+    run, mode = ("yes" if 8 <= now.hour <= 23 or now.hour == 0 else "no"), "trips"   # 8–24 Uhr
 elif event == "workflow_dispatch":
     run, mode = "yes", (manual or "trips")
 elif event == "schedule":
