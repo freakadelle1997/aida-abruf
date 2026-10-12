@@ -376,6 +376,31 @@ def _dashboard(daten):
                            for s, rows in per_ship.items()}
         e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
                     for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
+    # Buchbare Kabinen je Tag: Summe der freien Kabinen aller 4-Monats-Reisen (aus fleet/<id>.json)
+    # Die 4-Monats-Reisen werden über den Tag verteilt abgefragt: für Reisen ohne heutigen Wert gilt
+    # der letzte bekannte Stand (bis zur Abfahrt), sonst sähe ein halber Tag wie ein Einbruch aus.
+    fdir = daten / "fleet"
+    fl_hist = []
+    for f in fdir.glob("*.json") if fdir.exists() else []:
+        try:
+            h = json.loads(f.read_text())
+        except Exception:
+            continue
+        if h.get("counts"):
+            fl_hist.append((h.get("start") or "9999", h["counts"]))
+    all_days = sorted({dd for _, c in fl_hist for dd in c})
+    for start, cnt in fl_hist:
+        last = None
+        for day in all_days:
+            if day in cnt:
+                last = sum(cnt[day].values())
+            if last is None or day >= start:
+                continue
+            e = days.setdefault(day, {})
+            e["bookable"] = e.get("bookable", 0) + last
+            e["bookable_trips"] = e.get("bookable_trips", 0) + 1
+            if day in cnt:
+                e["bookable_fresh"] = e.get("bookable_fresh", 0) + 1
     return [dict(day=k, **v) for k, v in sorted(days.items())]
 
 
@@ -2009,7 +2034,7 @@ function renderDash() {
     </div>
     <div class="charts">
       <div class="chart"><h3>Katalog: Reisen im Katalog je Tag</h3><div class="box"><canvas id="db1"></canvas></div></div>
-      <div class="chart"><h3>Kabinen verkauft und zurück (4-Monats-Reisen)</h3><div class="box"><canvas id="db2"></canvas></div></div>
+      <div class="chart"><h3>Buchbare Kabinen je Tag (Reisen der nächsten 4 Monate)</h3><div class="box"><canvas id="db2"></canvas></div></div>
       <div class="chart"><h3>Wert der verkauften Kabinen pro Tag</h3><div class="box"><canvas id="db3"></canvas></div></div>
       <div class="chart"><h3>Katalog: Preise rauf / runter („ab“-Preis)</h3><div class="box"><canvas id="db4"></canvas></div></div>
     </div>
@@ -2054,7 +2079,18 @@ function renderDash() {
                  y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => n(v)}}},
         elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}}}));
   }
-  line("db2", [["verkauft", "sold", "--up"], ["zurück", "back", "--down"]], n);
+  {   // ein Graph: freie (buchbare) Kabinen je Tag, Tooltip mit Anzahl Reisen
+    const B = D.filter(x => x.bookable != null);
+    charts.push(new Chart($("db2"), {type: "line", data: {labels: B.map(x => d(x.day).slice(0, 6)), datasets: [{
+      label: "buchbare Kabinen", data: B.map(x => x.bookable), borderColor: css("--s2"), backgroundColor: css("--s2")}]},
+      options: {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+        plugins: {legend: {display: false}, tooltip: {callbacks: {
+          label: c => ` ${n(c.parsed.y)} buchbare Kabinen`,
+          afterLabel: c => { const x = B[c.dataIndex]; return `über ${x.bookable_trips} Reisen (${x.bookable_fresh || 0} heute aktualisiert)` + (x.sold != null ? ` · ${x.sold} verkauft, ${x.back} zurück` : ""); }}}},
+        scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}},
+                 y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => n(v)}}},
+        elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}}}));
+  }
   line("db3", [["Wert verkauft", "sold_value", "--s1"]], v => eur(v));
   line("db4", [["rauf", "up", "--up"], ["runter", "down", "--down"]], n);
 }
