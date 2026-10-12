@@ -948,6 +948,31 @@ tr.hl td { background: color-mix(in srgb, var(--s1) 10%, transparent); }
 .tchip { border: 1.5px solid var(--c); color: var(--text); background: none; border-radius: 14px; padding: 3px 10px;
   font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; opacity: .55; }
 .tchip.on { background: color-mix(in srgb, var(--c) 22%, transparent); opacity: 1; }
+/* ---------- Handy ---------- */
+.tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; white-space: nowrap; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs a { flex: 0 0 auto; }
+.chg { display: block; overflow-x: auto; max-width: 100%; }
+.chg td { white-space: normal; }
+.chg td.t { white-space: nowrap; }
+@media (max-width: 760px) {
+  .tabs a { padding: 9px 10px; font-size: 13.5px; }
+  .tiles { grid-template-columns: 1fr 1fr !important; }
+  .tile .v { font-size: 20px; }
+  .charts { grid-template-columns: 1fr !important; }
+  .filters label { flex: 1 1 140px; }
+  .filters input[type=search] { min-width: 0; width: 100%; }
+  .filters input.num { width: 100%; }
+  .chiplab { width: 100%; }
+  .krow .top h3 { flex-basis: 100%; }
+  .pctop { font-size: 13px; }
+  .itin { font-size: 12.5px; }
+  .maps { grid-template-columns: 1fr; }
+  .leafmap { height: 300px; }
+  .offer { font-size: 13px; }
+  .cabgrid { grid-template-columns: 1fr 1fr; }
+  .logpre { font-size: 11px; }
+}
 .kmeta { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
 .chg { width: auto; max-width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 22px; }
 .chg td { padding-right: 18px !important; }
