@@ -190,19 +190,31 @@ def _price_body(jid, tc, travellers):
 
 
 def _parse_prices(pr, prices):
-    """player.proxy-Antwort -> prices[(tarif, unterkategorie)] = günstigster Kabinenpreis (ohne Flug)."""
+    """player.proxy-Antwort -> prices[(tarif, unterkategorie)] = günstigster Kabinenpreis (ohne Flug).
+    Gibt es eine Kategorie nur als Flugpaket (z. B. Reisen mit Pflichtflug), wird der Kabinenpreis
+    aus dem Paket abgeleitet: Paketpreis minus Flugzuschlag (priceDetails "FlightSupplement")."""
     services = {s["id"]: s for s in (pr or {}).get("services", [])}
+    pkg = {}
     for prod in (pr or {}).get("products", []):
         refs = prod["serviceReferences"]
-        if not all("cruiseService" in services.get(r["serviceId"], {}) for r in refs):
-            continue  # Pakete mit Flug auslassen
+        with_flight = not all("cruiseService" in services.get(r["serviceId"], {}) for r in refs)
+        info = prod.get("priceInformation") or {}
+        amt = info.get("amount")
+        if with_flight and amt:
+            amt -= sum(x.get("amount") or 0 for x in info.get("priceDetails") or [] if x.get("priceType") == "FlightSupplement")
+        if not amt:
+            continue
         for r in refs:
-            cs = services[r["serviceId"]]["cruiseService"]
+            cs = services.get(r["serviceId"], {}).get("cruiseService")
+            if not cs:
+                continue
             var = next(v for v in cs["cruiseVariants"] if v["id"] == r["serviceVariantId"])
             key = (var["cabin"]["tariffType"], var["cabin"]["cabinCode"])
-            amt = prod["priceInformation"]["amount"]
-            if key not in prices or amt < prices[key]:
-                prices[key] = amt
+            tgt = pkg if with_flight else prices
+            if key not in tgt or amt < tgt[key]:
+                tgt[key] = amt
+    for key, amt in pkg.items():          # nur wo es keinen Preis ohne Flug gibt
+        prices.setdefault(key, amt)
     return prices
 
 

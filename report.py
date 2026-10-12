@@ -365,6 +365,15 @@ def _dashboard(daten):
                 a = bt.setdefault(k, [0, 0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
                 a[3] += v[3] if len(v) > 3 else (v[0] if not v[2] else 0)   # ältere Läufe: 0 € = ohne Preis
         e["by_ship"] = bs
+        # je Schiff: Top 20 nach verkauft und nach zurück (zum Aufklappen im Dashboard)
+        per_ship = {}
+        for k, v in bt.items():
+            ti = titles.get(k) or [None, None, None]
+            row = [k, v[0], v[1], round(v[2]), v[3] if len(v) > 3 else 0, ti[0], ti[2]]
+            per_ship.setdefault(ti[1] or "?", []).append(row)
+        e["ship_trips"] = {s: {"sold": sorted([r for r in rows if r[1] > 0], key=lambda r: -r[1])[:20],
+                               "back": sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])[:20]}
+                           for s, rows in per_ship.items()}
         e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
                     for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
     return [dict(day=k, **v) for k, v in sorted(days.items())]
@@ -2007,7 +2016,19 @@ function renderDash() {
     ${fl && fl.top && fl.top.length ? `<div class="sect">Meiste Verkäufe am ${d(fl.day)}</div>
       <table class="chg">${fl.top.filter(r => r[1] > 0).map(r => `<tr><td>${r[5] || r[0]} <span class="mut">· ${shipName(r[6] || "")} · ${r[7] ? d(r[7]) : ""}</span></td><td class="t">${r[1]} verkauft</td><td class="t">${r[2]} zurück</td><td class="t">${r[3] ? eur(r[3]) + (r[4] ? ` <span class="mut" title="${r[4]} Kabinen ohne Preis">+?</span>` : "") : '<span class="mut" title="AIDA liefert für diese Reise keinen Kabinenpreis ohne Flug">kein Preis</span>'}</td></tr>`).join("")}</table>` : ""}
     ${fl && fl.by_ship ? `<div class="sect">Nach Schiff am ${d(fl.day)}</div>
-      <table class="chg">${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => `<tr><td>${shipName(s)}</td><td class="t">${v[0]} verkauft</td><td class="t">${v[1]} zurück</td><td class="t">${eur(v[2])}</td></tr>`).join("")}</table>` : ""}`;
+      ${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => {
+        const st = (fl.ship_trips || {})[s] || {sold: [], back: []};
+        const val = r => r[3] ? eur(r[3]) + (r[4] ? ' <span class="mut">+?</span>' : "") : '<span class="mut">kein Preis</span>';
+        const list = (rows, key) => rows.length ? `<table class="chg">${rows.map(r => `<tr><td>${r[5] || r[0]} <span class="mut">· ${r[6] ? d(r[6]) : ""}</span></td>
+            <td class="t">${key === "sold" ? r[1] + " verkauft" : r[2] + " zurück"}</td>${key === "sold" ? `<td class="t">${val(r)}</td>` : ""}
+            <td><button class="mark" onclick="goTrip('${r[0]}')">Zur Reise →</button></td></tr>`).join("")}</table>` : '<p class="mut">keine</p>';
+        return `<div class="krow"><div class="top" onclick="this.parentNode.querySelector('.more').hidden ^= 1">
+            <h3 style="flex:1 1 200px">${shipName(s, "big")}</h3>
+            <span class="m">${v[0]} verkauft · ${v[1]} zurück · ${eur(v[2])} ▾</span></div>
+          <div class="more" hidden>
+            <h3 style="font-size:14px;margin:6px 0">Top 20 verkauft</h3>${list(st.sold, "sold")}
+            <h3 style="font-size:14px;margin:12px 0 6px">Top 20 zurück (wieder frei geworden)</h3>${list(st.back, "back")}
+          </div></div>`; }).join("")}` : ""}`;
   const lab = D.map(x => d(x.day).slice(0, 6));
   const line = (id, sets, fmt) => {
     const o = {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
