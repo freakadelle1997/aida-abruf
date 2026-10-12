@@ -362,7 +362,8 @@ def _dashboard(daten):
             for k, v in r["by_ship"].items():
                 a = bs.setdefault(k, [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
             for k, v in r["by_trip"].items():
-                a = bt.setdefault(k, [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
+                a = bt.setdefault(k, [0, 0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
+                a[3] += v[3] if len(v) > 3 else (v[0] if not v[2] else 0)   # ältere Läufe: 0 € = ohne Preis
         e["by_ship"] = bs
         e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
                     for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
@@ -2004,7 +2005,7 @@ function renderDash() {
       <div class="chart"><h3>Katalog: Preise rauf / runter („ab“-Preis)</h3><div class="box"><canvas id="db4"></canvas></div></div>
     </div>
     ${fl && fl.top && fl.top.length ? `<div class="sect">Meiste Verkäufe am ${d(fl.day)}</div>
-      <table class="chg">${fl.top.filter(r => r[1] > 0).map(r => `<tr><td>${r[4] || r[0]} <span class="mut">· ${r[5] || ""} · ${r[6] ? d(r[6]) : ""}</span></td><td class="t">${r[1]} verkauft</td><td class="t">${r[2]} zurück</td><td class="t">${eur(r[3])}</td></tr>`).join("")}</table>` : ""}
+      <table class="chg">${fl.top.filter(r => r[1] > 0).map(r => `<tr><td>${r[5] || r[0]} <span class="mut">· ${shipName(r[6] || "")} · ${r[7] ? d(r[7]) : ""}</span></td><td class="t">${r[1]} verkauft</td><td class="t">${r[2]} zurück</td><td class="t">${r[3] ? eur(r[3]) + (r[4] ? ` <span class="mut" title="${r[4]} Kabinen ohne Preis">+?</span>` : "") : '<span class="mut" title="AIDA liefert für diese Reise keinen Kabinenpreis ohne Flug">kein Preis</span>'}</td></tr>`).join("")}</table>` : ""}
     ${fl && fl.by_ship ? `<div class="sect">Nach Schiff am ${d(fl.day)}</div>
       <table class="chg">${Object.entries(fl.by_ship).sort((a, b) => b[1][0] - a[1][0]).map(([s, v]) => `<tr><td>${shipName(s)}</td><td class="t">${v[0]} verkauft</td><td class="t">${v[1]} zurück</td><td class="t">${eur(v[2])}</td></tr>`).join("")}</table>` : ""}`;
   const lab = D.map(x => d(x.day).slice(0, 6));

@@ -260,6 +260,20 @@ def run_fleet(batch=None):
     runs_today = json.loads(df.read_text()) if df.exists() else []
     runs_today.append(summ)
 
+    def type_price(t, code):
+        """Ersatz, wenn AIDA für die Kategorie keinen Preis ohne Flug liefert (z. B. Reisen nur
+        als Flugpaket): Kabinenpreis der Kabinenart aus den Katalog-Details (PREMIUM, sonst günstigster)."""
+        grp = None
+        kf = d / "ships" / f"kategorien-{t.get('ship')}-{t.get('var')}.json"
+        if kf.exists():
+            grp = (json.loads(kf.read_text()).get(code) or [None])[0]
+        typ = grp or code[0]
+        tp = {}
+        for x in t.get("tariffs") or []:
+            if x.get("cabin_type") == typ and x.get("cabin"):
+                tp[TNAME.get(x["tariff"], x["tariff"])] = x["cabin"]
+        return tp.get("PREMIUM") or (min(tp.values()) if tp else None)
+
     def store(t, cats, tprices):
         f = fd / f"{t['id']}.json"
         h = json.loads(f.read_text()) if f.exists() else {"journey": t["id"], "ship": t["ship"],
@@ -272,11 +286,13 @@ def run_fleet(batch=None):
             pr_prev = (h.get("prices") or {}).get(max(h.get("prices") or {"": 0}), {}) if h.get("prices") else {}
 
             def value(code):
-                p = tprices.get(code) or {}
+                p = {k: v for k, v in (tprices.get(code) or {}).items() if v}       # 0-Preise ignorieren
                 v = p.get("IND") or (min(p.values()) if p else None)
                 if v is None:
-                    q = pr_prev.get(code) or {}
+                    q = {k: x for k, x in (pr_prev.get(code) or {}).items() if x}
                     v = q.get("PREMIUM") or (min(q.values()) if q else None)
+                if v is None:
+                    v = type_price(t, code)
                 return v
             for code in set(h["cabins"]) | set(cats):
                 o, n = set(h["cabins"].get(code, [])), set(cats.get(code, []))
@@ -292,8 +308,10 @@ def run_fleet(batch=None):
                 summ["sold_value"] += (v or 0) * len(gone); summ["back_value"] += (v or 0) * len(back)
                 sh = summ["by_ship"].setdefault(t["ship"], [0, 0, 0.0])
                 sh[0] += len(gone); sh[1] += len(back); sh[2] += (v or 0) * len(gone)
-                tr = summ["by_trip"].setdefault(t["id"], [0, 0, 0.0])
+                tr = summ["by_trip"].setdefault(t["id"], [0, 0, 0.0, 0])
                 tr[0] += len(gone); tr[1] += len(back); tr[2] += (v or 0) * len(gone)
+                if v is None:
+                    tr[3] += len(gone)          # verkauft, aber ohne Preis (nicht bewertbar)
         h["choice"] = bool(new)          # keine einzige Kabine -> AIDA teilt zu (keine Kabinenwahl)
         h["counts"][today] = {k: len(v) for k, v in cats.items() if v}
         if h.get("cabins") is not None:
