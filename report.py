@@ -2008,7 +2008,7 @@ function renderDash() {
       <div class="tile"><div class="k">Wert verkauft</div><div class="v">${fl ? eur(fl.sold_value) : "–"}</div><div class="d">${fl && fl.sold ? "Ø " + eur(fl.sold_value / fl.sold) + " je Kabine" : ""}</div></div>
     </div>
     <div class="charts">
-      <div class="chart"><h3>Katalog: neue und entfallene Reisen</h3><div class="box"><canvas id="db1"></canvas></div></div>
+      <div class="chart"><h3>Katalog: Reisen im Katalog je Tag</h3><div class="box"><canvas id="db1"></canvas></div></div>
       <div class="chart"><h3>Kabinen verkauft und zurück (4-Monats-Reisen)</h3><div class="box"><canvas id="db2"></canvas></div></div>
       <div class="chart"><h3>Wert der verkauften Kabinen pro Tag</h3><div class="box"><canvas id="db3"></canvas></div></div>
       <div class="chart"><h3>Katalog: Preise rauf / runter („ab“-Preis)</h3><div class="box"><canvas id="db4"></canvas></div></div>
@@ -2042,7 +2042,18 @@ function renderDash() {
       label, data: D.map(x => x[key] ?? null), borderColor: css(col), backgroundColor: css(col), spanGaps: true}))}, options: o}));
   };
   renderPricing();
-  line("db1", [["neu", "new", "--down"], ["entfallen", "gone", "--up"]], n);
+  {   // ein Graph: Stand je Tag, Tooltip mit neu/entfallen
+    const K = D.filter(x => x.total != null);
+    charts.push(new Chart($("db1"), {type: "line", data: {labels: K.map(x => d(x.day).slice(0, 6)), datasets: [{
+      label: "Reisen im Katalog", data: K.map(x => x.total), borderColor: css("--s1"), backgroundColor: css("--s1")}]},
+      options: {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+        plugins: {legend: {display: false}, tooltip: {callbacks: {
+          label: c => ` ${n(c.parsed.y)} Reisen`,
+          afterLabel: c => { const x = K[c.dataIndex]; return x.new != null ? `+${x.new} neu · −${x.gone} entfallen` : ""; }}}},
+        scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}},
+                 y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => n(v)}}},
+        elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}}}));
+  }
   line("db2", [["verkauft", "sold", "--up"], ["zurück", "back", "--down"]], n);
   line("db3", [["Wert verkauft", "sold_value", "--s1"]], v => eur(v));
   line("db4", [["rauf", "up", "--up"], ["runter", "down", "--down"]], n);
