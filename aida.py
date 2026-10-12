@@ -79,7 +79,7 @@ def aida_session(entry_url):
             except json.JSONDecodeError:
                 raise AidaError(f"{path[:80]} -> keine JSON-Antwort")
 
-        def call_many(paths, conc=3, delay=0.3, reduce_js=None):
+        def call_many(paths, conc=2, delay=0.5, reduce_js=None):
             """Viele GET-Abrufe parallel aus der Seite heraus (kleiner Worker-Pool mit Pause).
             reduce_js: JS-Funktionsausdruck, der jede Antwort schon in der Seite verkleinert.
             Liefert {path: json | None}; fehlgeschlagene einzeln mit call() nachholen."""
@@ -113,7 +113,7 @@ def aida_session(entry_url):
                     parsed[pth] = None
             return parsed
 
-        def call_posts(items, conc=3, delay=0.25):
+        def call_posts(items, conc=2, delay=0.4):
             """Viele POST-Abrufe parallel aus der Seite: items = [(schlüssel, pfad, body)].
             Liefert {schlüssel: json | None}."""
             res = page.evaluate(

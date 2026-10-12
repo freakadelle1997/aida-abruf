@@ -251,6 +251,89 @@ def _write_price_histories(con, data, daten, out_dir, tracked):
     return len(hist)
 
 
+def _pricing(daten):
+    """Preisgestaltung aus den täglichen Katalog-Momentaufnahmen (echte Tarifpreise je
+    Kabinenart, nicht der springende ab-Preis) und den Kategoriepreisen der 4-Monats-Reisen."""
+    import statistics as st
+    ch = daten / "catalog-history"
+    days = sorted(f.stem for f in ch.glob("*.json")) if ch.exists() else []
+    H = {}
+    for k in days:
+        trips = json.loads((ch / f"{k}.json").read_text())["trips"]
+        if sum(1 for v in trips.values() if v.get("t")) > 500:      # nur Tage mit vollen Tarifdaten
+            H[k] = trips
+    full = sorted(H)
+    cf = daten / "catalog.json"
+    cat = {t["id"]: t for t in json.loads(cf.read_text())["trips"]} if cf.exists() else {}
+    fleet = {}
+    fd = daten / "fleet"
+    def fl(j):
+        if j not in fleet:
+            f = fd / f"{j}.json"
+            fleet[j] = json.loads(f.read_text()) if f.exists() else None
+        return fleet[j]
+    per_day, changes = [], []
+    WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    for a, b in zip(full, full[1:]):
+        up = down = 0
+        causes = {"ausverkauft": 0, "Kategoriepreis": 0, "unbekannt": 0}
+        for j, vb in H[b].items():
+            va = H[a].get(j)
+            if not va or not va.get("t") or not vb.get("t"):
+                continue
+            for typ, tp in vb["t"].items():
+                for tf, p in tp.items():
+                    o = (va["t"].get(typ) or {}).get(tf)
+                    if not (o and p and o != p):
+                        continue
+                    up += p > o; down += p < o
+                    if tf != "PREMIUM":
+                        continue                     # Ursache/Liste je Kabinenart nur einmal (PREMIUM)
+                    cause = "unbekannt"
+                    h = fl(j)
+                    if h:
+                        pa, pb = (h.get("prices") or {}).get(a), (h.get("prices") or {}).get(b)
+                        if pa and pb:
+                            ks = [k for k in set(pa) | set(pb) if k[0] == typ]
+                            gone = [k for k in ks if (pa.get(k) or {}).get("PREMIUM") and not (pb.get(k) or {}).get("PREMIUM")]
+                            moved = [k for k in ks if (pa.get(k) or {}).get("PREMIUM") and (pb.get(k) or {}).get("PREMIUM")
+                                     and pa[k]["PREMIUM"] != pb[k]["PREMIUM"]]
+                            cause = "Kategoriepreis" if moved else ("ausverkauft" if gone else "unbekannt")
+                    causes[cause] += 1
+                    t = cat.get(j, {})
+                    months = (date.fromisoformat(t["start"]) - date.fromisoformat(b)).days // 30 if t.get("start") else None
+                    changes.append({"day": b, "id": j, "title": t.get("title"), "ship": t.get("ship"), "start": t.get("start"),
+                                    "typ": typ, "old": o, "new": p, "cause": cause, "months": months})
+        per_day.append({"day": b, "wd": WD[date.fromisoformat(b).weekday()], "up": up, "down": down, **causes})
+    # Kennzahlen aus dem jüngsten Tag
+    allin, prem = [], []
+    if full:
+        for j, v in H[full[-1]].items():
+            n = cat.get(j, {}).get("nights")
+            for tp in (v.get("t") or {}).values():
+                if n and tp.get("PREMIUM") and tp.get("PREMIUM ALL IN"):
+                    allin.append((tp["PREMIUM ALL IN"] - tp["PREMIUM"]) / 2 / n)
+                if tp.get("PREMIUM") and tp.get("CLASSIC"):
+                    prem.append(100 * (tp["PREMIUM"] - tp["CLASSIC"]) / tp["CLASSIC"])
+    pct = [100 * (c["new"] - c["old"]) / c["old"] for c in changes]
+    eur_d = [c["new"] - c["old"] for c in changes]
+    by_m = {}
+    for c in changes:
+        if c["months"] is not None:
+            k = "0–1" if c["months"] < 2 else "2–3" if c["months"] < 4 else "4–6" if c["months"] < 7 else "7–12" if c["months"] < 13 else "13+"
+            by_m[k] = by_m.get(k, 0) + 1
+    by_wd = {}
+    for r in per_day:
+        by_wd[r["wd"]] = by_wd.get(r["wd"], 0) + r["up"] + r["down"]
+    return {"days": full, "per_day": per_day, "changes": changes[::-1][:200],
+            "step_pct_median": round(st.median(pct), 1) if pct else None,
+            "step_eur_median": round(st.median(eur_d)) if eur_d else None,
+            "allin_pp_night": round(st.median(allin)) if allin else None,
+            "allin_range": [round(min(allin)), round(max(allin))] if allin else None,
+            "premium_vs_classic": round(st.median(prem)) if prem else None,
+            "by_months": by_m, "by_weekday": by_wd}
+
+
 def _dashboard(daten):
     """Tageszahlen des 8-Uhr-Laufs: Katalog (Reisen gesamt, neu, entfallen, Preisänderungen) und
     die 4-Monats-Reisen (verschwundene/zurückgekehrte Kabinen und ihr Wert)."""
@@ -659,7 +742,7 @@ def build(con=None):
     (OUT.parent / "version.json").write_text(json.dumps({"build": build_id}))
     _write_price_histories(con, data, daten, OUT.parent, [t["journey"] for t in data])
     _write_logs(daten, OUT.parent)
-    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "ship_imgs": ship_imgs, "dashboard": _dashboard(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
+    html = TEMPLATE.replace("__DATA__", json.dumps({"build": build_id, "ship_imgs": ship_imgs, "dashboard": _dashboard(daten), "pricing": _pricing(daten), "trips": data, "groups": GROUPS, "tracked": list(focus) or journeys,
                                                     "catalog": cat_meta, "catalog_changes": cat_changes},
                                                    ensure_ascii=False))
     OUT.write_text(html)
@@ -1833,6 +1916,50 @@ function restoreScroll() {
 }
 
 // ---------- Dashboard (Tageszahlen des 8-Uhr-Laufs) ----------
+function renderPricing() {
+  const P = DATA.pricing;
+  const box = document.createElement("div");
+  $("dash").appendChild(box);
+  if (!P || P.days.length < 2) {
+    box.innerHTML = `<div class="sect">Preisgestaltung</div><p class="mut">Entsteht ab zwei Tagen mit vollständigen Tarifdaten.</p>`; return;
+  }
+  const n = v => v == null ? "–" : Math.round(v).toLocaleString("de-DE");
+  const last = P.per_day[P.per_day.length - 1];
+  const tot = P.per_day.reduce((s, r) => s + r.up + r.down, 0), ups = P.per_day.reduce((s, r) => s + r.up, 0);
+  const causes = P.per_day.reduce((s, r) => (s.a += r.ausverkauft, s.k += r.Kategoriepreis, s.u += r.unbekannt, s), {a: 0, k: 0, u: 0});
+  const WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"], MB = ["0–1", "2–3", "4–6", "7–12", "13+"];
+  box.innerHTML = `<div class="sect" style="margin-top:28px">Preisgestaltung <span class="mut" style="font-weight:400">· echte Tarifpreise, ${P.days.length} Tage (${d(P.days[0])} – ${d(P.days[P.days.length - 1])})</span></div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Preisänderungen</div><div class="v">${n(tot)}</div><div class="d">${ups} rauf · ${tot - ups} runter · zuletzt ${last.up + last.down}/Tag</div></div>
+      <div class="tile"><div class="k">Typischer Schritt</div><div class="v">${P.step_pct_median != null ? (P.step_pct_median > 0 ? "+" : "") + String(P.step_pct_median).replace(".", ",") + " %" : "–"}</div><div class="d">Median ${P.step_eur_median != null ? (P.step_eur_median > 0 ? "+" : "") + eur(P.step_eur_median) : "–"} je Kabine</div></div>
+      <div class="tile"><div class="k">ALL-IN-Aufschlag</div><div class="v">${P.allin_pp_night != null ? P.allin_pp_night + " €" : "–"}</div><div class="d">pro Person/Nacht (Median; ${P.allin_range ? P.allin_range.join("–") + " €" : ""})</div></div>
+      <div class="tile"><div class="k">PREMIUM vs. CLASSIC</div><div class="v">${P.premium_vs_classic != null ? "+" + P.premium_vs_classic + " %" : "–"}</div><div class="d">Aufpreis für freie Kabinenwahl (Median)</div></div>
+    </div>
+    <div class="charts">
+      <div class="chart"><h3>Echte Preisänderungen je Tag (alle Tarife und Kabinenarten)</h3><div class="box"><canvas id="pg1"></canvas></div></div>
+      <div class="chart"><h3>Ursache (4-Monats-Reisen, je Kabinenart)</h3><div class="box"><canvas id="pg2"></canvas></div></div>
+    </div>
+    <p class="note">Ursache „ausverkauft“ = die günstigste Kategorie des Typs ist weggefallen, der Typpreis springt auf die nächste Stufe (Kategoriepreise selbst unverändert). „Kategoriepreis“ = AIDA hat den Preis einer Kategorie geändert. Gesamt bisher: ${causes.a} ausverkauft · ${causes.k} Kategoriepreis · ${causes.u} unbekannt (Reisen über 4 Monate ohne Kategoriedaten).</p>
+    <div class="charts">
+      <div class="chart"><h3>Änderungen nach Wochentag</h3><table class="chg">${WD.map(w => `<tr><td>${w}</td><td class="t">${P.by_weekday[w] ?? 0}</td></tr>`).join("")}</table></div>
+      <div class="chart"><h3>Änderungen nach Monaten bis Abfahrt</h3><table class="chg">${MB.map(m => `<tr><td>${m} Monate</td><td class="t">${P.by_months[m] ?? 0}</td></tr>`).join("")}</table></div>
+    </div>
+    ${P.changes.length ? `<div class="sect">Letzte Preisänderungen (PREMIUM je Kabinenart)</div>
+      <table class="chg">${P.changes.slice(0, 40).map(c => `<tr><td class="t">${d(c.day).slice(0, 6)}</td>
+        <td>${c.title || c.id} <span class="mut">· ${shipName(c.ship || "")} · ${c.start ? d(c.start) : ""}</span></td>
+        <td>${TYPE_NAME[c.typ] || c.typ}</td><td class="t">${eur(c.old)} → ${eur(c.new)} <span class="${c.new > c.old ? "up" : "down"}">(${c.new > c.old ? "+" : ""}${eur(c.new - c.old)})</span></td>
+        <td class="mut">${c.cause}</td><td><button class="mark" onclick="goTrip('${c.id}')">Zur Reise →</button></td></tr>`).join("")}</table>` : ""}`;
+  const lab = P.per_day.map(r => d(r.day).slice(0, 6));
+  const o = {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+    plugins: {legend: {display: true, labels: {color: css("--text-2"), boxWidth: 12}}},
+    scales: {x: {grid: {display: false}, ticks: {color: css("--text-2")}}, y: {beginAtZero: true, suggestedMax: 5, grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0}}},
+    elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}};
+  const mk = (id, sets) => charts.push(new Chart($(id), {type: "line", data: {labels: lab, datasets: sets.map(([l, k, c]) => ({
+    label: l, data: P.per_day.map(r => r[k]), borderColor: css(c), backgroundColor: css(c)}))}, options: o}));
+  mk("pg1", [["rauf", "up", "--up"], ["runter", "down", "--down"]]);
+  mk("pg2", [["ausverkauft", "ausverkauft", "--s4"], ["Kategoriepreis", "Kategoriepreis", "--s1"], ["unbekannt", "unbekannt", "--s6"]]);
+}
+
 function renderDash() {
   const root = $("dash"), D = DATA.dashboard || [];
   if (!D.length) { root.innerHTML = `<p class="mut">Noch keine Tageszahlen – entstehen mit dem täglichen 8-Uhr-Lauf.</p>`; return; }
@@ -1867,6 +1994,7 @@ function renderDash() {
     charts.push(new Chart($(id), {type: "line", data: {labels: lab, datasets: sets.map(([label, key, col]) => ({
       label, data: D.map(x => x[key] ?? null), borderColor: css(col), backgroundColor: css(col), spanGaps: true}))}, options: o}));
   };
+  renderPricing();
   line("db1", [["neu", "new", "--down"], ["entfallen", "gone", "--up"]], n);
   line("db2", [["verkauft", "sold", "--up"], ["zurück", "back", "--down"]], n);
   line("db3", [["Wert verkauft", "sold_value", "--s1"]], v => eur(v));

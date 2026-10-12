@@ -73,10 +73,13 @@ case "$MODE" in
     weekly|catalog|both) python -u run.py --catalog 2>&1 | progress || echo "Katalog fehlgeschlagen" ;;
 esac
 [[ "$MODE" =~ ^(daily|weekly|catalog|both)$ ]] && save_data "katalog"
+# 4-Monats-Reisen: über die Stundenläufe verteilt (je ~20 Reisen), nicht am Stück im 8-Uhr-Lauf –
+# sonst greift AIDAs Bot-Schutz (403). "fleet" = manuell alles auf einmal.
 case "$MODE" in
-    daily|weekly|fleet) python -u run.py --fleet 2>&1 | progress || echo "Flotte fehlgeschlagen" ;;
+    trips)  python -u run.py --fleet --batch 20 2>&1 | progress || echo "Flotte fehlgeschlagen" ;;
+    fleet)  python -u run.py --fleet 2>&1 | progress || echo "Flotte fehlgeschlagen" ;;
 esac
-[[ "$MODE" =~ ^(daily|weekly|fleet)$ ]] && save_data "flotte"
+[[ "$MODE" =~ ^(trips|fleet)$ ]] && save_data "flotte"
 if [[ "$MODE" != "catalog" && "$MODE" != "fleet" ]]; then
     python ci_progress.py phase "Hinterlegte Reisen"
     python run.py || echo "Abruf mit Fehlern"

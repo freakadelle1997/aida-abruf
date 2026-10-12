@@ -221,7 +221,11 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def run_fleet():
+class BotBlocked(Exception):
+    pass
+
+
+def run_fleet(batch=None):
     """Täglich: freie Kabinen je Kategorie für alle Katalog-Reisen der nächsten 4 Monate.
     Pro Reise daten/fleet/<id>.json: counts {datum: {kat: anzahl}}, cabins (aktueller Stand),
     moves {datum: {"+": neu frei, "-": weg}}, prices {datum: {kat: {tarif: preis}}}.
@@ -239,7 +243,11 @@ def run_fleet():
         return today in (h.get("counts") or {}) and today in (h.get("prices") or {})
     done_today = {f.stem for f in fd.glob("*.json") if complete_today(json.loads(f.read_text()))}
     todo = [t for t in trips if t["id"] not in done_today]
-    print(f"Flotte: {len(trips)} Reisen bis {lim}, offen {len(todo)}", flush=True)
+    if batch:                         # über die Stundenläufe verteilen: je Lauf nur ein Teil
+        todo = todo[:batch]
+    print(f"Flotte: {len(trips)} Reisen bis {lim}, offen {len(trips) - len(done_today)}, dieser Lauf {len(todo)}", flush=True)
+    if not todo:
+        return
     aida.SUBCAT_CACHE = str(d / "ships")
     stamp = datetime.now().isoformat(timespec="minutes")
     # Tageszusammenfassung fürs Dashboard: verschwundene/zurückgekehrte Kabinen und ihr Wert,
@@ -329,6 +337,9 @@ def run_fleet():
             print(f"Flotte abgebrochen: {e}", flush=True)
             break
         except Exception as e:
+            if "403" in str(e):          # Bot-Schutz: nicht nachhaken, nächster Lauf macht weiter
+                print(f"Flotte: Bot-Schutz (403) – Rest im nächsten Lauf", flush=True)
+                break
             print(f"Flotte Versuch {attempt}: {e}", file=sys.stderr, flush=True)
             time.sleep(20)
     flush_summary()
@@ -408,7 +419,7 @@ if __name__ == "__main__":
     if "--catalog" in sys.argv:
         run_catalog(incremental="--incremental" in sys.argv)
     if "--fleet" in sys.argv:
-        run_fleet()
+        run_fleet(batch=int(sys.argv[sys.argv.index("--batch") + 1]) if "--batch" in sys.argv else None)
     if "--catalog" in sys.argv or "--fleet" in sys.argv:
         if "--with-trips" not in sys.argv:
             sys.exit(0)
