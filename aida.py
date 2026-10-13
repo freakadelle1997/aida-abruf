@@ -467,7 +467,9 @@ def catalog_details(call, trips, ids, log=print, chunk=40, done=None):
 def fleet_free(call, trips, log=print, chunk=5):
     """Freie Kabinen je Unterkategorie für viele Reisen (aus dem Katalog: id, ship, var, start, end).
     Nur PREMIUM, 2 Erwachsene, je Kategorie max. 100 (AIDA-Grenze). Liefert {id: {kat: [nummern]}}.
-    Bricht ab, wenn AIDA die Kabinenauswahl sperrt."""
+    Kategorien ohne verwertbare Antwort (Zeitüberschreitung, HTTP-Fehler) werden zweimal langsam
+    wiederholt und sonst als None geliefert – NICHT als leere Liste, sonst sähe ein Abruffehler
+    wie eine ausverkaufte Kategorie aus. Bricht ab, wenn AIDA die Kabinenauswahl sperrt."""
     travellers = _travellers({"adults": 2, "juveniles": 0, "children": 0, "babies": 0})
     out = {}
     for k in range(0, len(trips), chunk):
@@ -482,13 +484,22 @@ def fleet_free(call, trips, log=print, chunk=5):
             for code in sorted(cats):
                 items.append((f"{t['id']}|{code}", f"{REQ}/booking.proxy.json?cabinListCall={code}",
                               _cabin_list_body(t["id"], t["start"], t["end"], "IND", code, travellers)))
-        res = call.posts(items)
+        todo, res = items, {}
+        for attempt in range(3):
+            if attempt:
+                log(f"  {len(todo)} Kabinenlisten ohne Antwort, Wiederholung {attempt}")
+            res.update(call.posts(todo, **({} if not attempt else {"conc": 1, "delay": 1.5})))
+            pls = {it[0]: (res.get(it[0]) or {}).get("payload") or {} for it in todo}
+            if any("not possible" in (pl.get("text") or "") for pl in pls.values()):
+                raise CabinSelectionClosed("Kabinenauswahl bei AIDA derzeit nicht möglich")
+            todo = [it for it in todo if "content" not in pls[it[0]]]
+            if not todo:
+                break
         for key, r in res.items():
             jid, code = key.split("|")
             pl = (r or {}).get("payload") or {}
             if "content" not in pl:
-                if "not possible" in (pl.get("text") or ""):
-                    raise CabinSelectionClosed("Kabinenauswahl bei AIDA derzeit nicht möglich")
+                out.setdefault(jid, {})[code] = None      # unbekannt, nicht ausverkauft
                 continue
             cabins = ((pl["content"].get("stringResponse") or {}).get("actionResult") or {}).get("cabins") or []
             nums = sorted(c["cabin"]["number"] for c in cabins if c["cabin"].get("state") == "Available"

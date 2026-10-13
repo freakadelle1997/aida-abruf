@@ -278,6 +278,15 @@ def run_fleet(batch=None):
         f = fd / f"{t['id']}.json"
         h = json.loads(f.read_text()) if f.exists() else {"journey": t["id"], "ship": t["ship"],
                                                           "start": t["start"], "counts": {}, "moves": {}}
+        if not any(v is not None for v in cats.values()):
+            return                       # gar keine Antwort: nicht speichern, nächster Lauf versucht es neu
+        # Kategorien ohne Antwort (None) oder gar nicht abgefragt behalten ihren letzten Stand –
+        # sonst zählt ein Abruffehler die ganze Kategorie als verkauft und beim nächsten Mal als zurück
+        unknown = {c for c in h.get("cabins") or {} if cats.get(c) is None}
+        if unknown:
+            summ["unknown"] = summ.get("unknown", 0) + len(unknown)
+        cats = {c: v for c, v in cats.items() if v is not None}
+        cats.update({c: h["cabins"][c] for c in unknown})
         old = {n for v in (h.get("cabins") or {}).values() for n in v}
         new = {n for v in cats.values() for n in v}
         summ["trips"] += 1
@@ -362,7 +371,9 @@ def run_fleet(batch=None):
             time.sleep(20)
     flush_summary()
     print(f"Flotte: {summ['trips']} Reisen gespeichert, {summ['sold']} Kabinen verschwunden "
-          f"(Wert {round(summ['sold_value'])} €), {summ['back']} zurück", flush=True)
+          f"(Wert {round(summ['sold_value'])} €), {summ['back']} zurück"
+          + (f", {summ['unknown']} Kategorien ohne Antwort (letzter Stand behalten)" if summ.get("unknown") else ""),
+          flush=True)
 
 
 def main(force=False, only=None):

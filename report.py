@@ -109,13 +109,16 @@ def _changes(con, runs, days=14):
 
 
 CAP = 100   # AIDA zeigt je Kategorie höchstens 100 freie Kabinen
+WITHDRAW_MIN = 3   # so viele gemeinsam neu freigegebene Kabinen, die gemeinsam wieder verschwinden
 
 
 def _sales(con, runs, focus=None):
     """Verkäufe aus den Kabinenlisten aufeinanderfolgender Abrufe.
     Gezählt wird nur in Kategorien unter der 100er-Grenze (darüber verschiebt sich nur das
     sichtbare Fenster). Kabinen, die verschwinden und später wiederkommen, gelten als
-    kurzzeitig reserviert, nicht als verkauft."""
+    kurzzeitig reserviert, nicht als verkauft. Taucht eine Gruppe von Kabinen gemeinsam neu auf
+    und verschwindet der noch freie Rest später gemeinsam wieder (mind. WITHDRAW_MIN), hat AIDA
+    die Freigabe zurückgezogen (z. B. 10.10.2026: 9 Innenkabinen für 7 Stunden) – auch kein Verkauf."""
     if len(runs) < 2:
         return None
     sets, caps = [], []
@@ -126,13 +129,24 @@ def _sales(con, runs, focus=None):
     per_run, gone_at = [], {}          # Kabine -> Abruf-Index, an dem sie verschwand
     gone_cap = {}                       # dasselbe für gedeckelte Kategorien (nur Untergrenze)
     held = set()                        # verschwunden und später wieder aufgetaucht
+    appeared = {}                       # neu freigegebene Kabine -> Abruf-Index des Auftauchens
+    withdrawn = set()                   # (Kabine, Abruf-Index): Freigabe zurückgezogen
     for i in range(1, len(runs)):
         a, b = sets[i - 1], sets[i]
         capped = caps[i - 1] | caps[i]
         gone = {x for x in a - b if x[0] not in capped}
         back = {x for x in b - a if x[0] not in capped}
+        wd = set()
+        for r in {appeared[x] for x in gone if x in appeared}:
+            grp = {x for x, j in appeared.items() if j == r}      # noch freie Kabinen dieser Freigabe
+            if len(grp) >= WITHDRAW_MIN and grp <= gone:
+                wd |= grp
+        for x in wd:
+            withdrawn.add((x, i))
         for x in gone:
-            gone_at[x] = i
+            appeared.pop(x, None)
+            if x not in wd:
+                gone_at[x] = i
         for x in (a - b) - gone:
             gone_cap[x] = i
         for x in (b - a) - back:
@@ -140,6 +154,8 @@ def _sales(con, runs, focus=None):
         for x in back:
             if x in gone_at:
                 held.add((x, gone_at.pop(x)))
+            else:
+                appeared[x] = i
         per_run.append({"ts": runs[i]["fetched_at"][:16], "gone": len(gone), "back": len(back),
                         "gone_f": sum(1 for x in gone if x[0] == focus),
                         "back_f": sum(1 for x in back if x[0] == focus),
@@ -157,20 +173,23 @@ def _sales(con, runs, focus=None):
     days = max((t1 - t0).total_seconds() / 86400, 1 / 24)
     by_day = {}
     for x, j in gone_at.items():
-        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0])[0] += 1
+        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0, 0])[0] += 1
     for x, j in held:
-        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0])[1] += 1
+        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0, 0])[1] += 1
+    for x, j in withdrawn:
+        by_day.setdefault(runs[j]["fetched_at"][:10], [0, 0, 0])[2] += 1
     fcur = _cats(con, runs[-1]["id"]).get(focus) if focus else None
     rate_f = sum(1 for x in sold if x[0] == focus) / days if focus else None
     return {"per_run": per_run, "cum": cum, "cum_f": cum_f, "sold": len(sold),
             "sold_f": sum(1 for x in sold if x[0] == focus) if focus else None,
-            "held": len(held), "days": round(days, 2), "rate": round(len(sold) / days, 1),
+            "held": len(held), "withdrawn": len(withdrawn),
+            "days": round(days, 2), "rate": round(len(sold) / days, 1),
             "rate_f": round(rate_f, 2) if rate_f is not None else None,
             "focus_free": fcur["free"] if fcur else None,
             "focus_capped": bool(fcur and fcur["free"] >= CAP),
             # gedeckelte Wunschkategorie: aus dem sichtbaren 100er-Fenster verschwunden, nicht zurück
             "sold_f_min": sum(1 for x in gone_cap if x[0] == focus) if focus else None,
-            "by_day": sorted(([k, v[0], v[1]] for k, v in by_day.items()), reverse=True),
+            "by_day": sorted(([k] + v for k, v in by_day.items()), reverse=True),
             "capped_cats": sorted(caps[-1])}
 
 
@@ -1382,7 +1401,7 @@ function salesBlock(t, ti) {
   return `<div class="sect">Verkäufe</div>
     <div class="tiles">
       <div class="tile"><div class="k">Netto verkauft</div><div class="v">${s.sold}</div>
-        <div class="d">seit ${s.days < 1 ? Math.round(s.days * 24) + " Std." : String(s.days).replace(".", ",") + " Tagen"}</div></div>
+        <div class="d">seit ${s.days < 1 ? Math.round(s.days * 24) + " Std." : String(s.days).replace(".", ",") + " Tagen"}${s.withdrawn ? ` · ohne ${s.withdrawn} zurückgezogene Freigaben` : ""}</div></div>
       <div class="tile"><div class="k">Tempo</div><div class="v">${String(s.rate).replace(".", ",")}</div>
         <div class="d">Kabinen pro Tag (ganzes Schiff)</div></div>
       ${fc ? `<div class="tile"><div class="k">Verkauft ${fc}</div><div class="v">${s.focus_capped ? "mind. " + (s.sold_f_min || 0) : s.sold_f}</div>
@@ -1395,8 +1414,8 @@ function salesBlock(t, ti) {
       <div class="chart"><h3>Bewegungen kumuliert · ganzes Schiff (Kategorien unter 100)</h3><div class="box"><canvas id="sr${ti}"></canvas></div></div>
       <div class="chart"><h3>Netto verkauft seit Beginn · ganzes Schiff${t.focus ? " und " + t.focus.code : ""}</h3><div class="box"><canvas id="sc${ti}"></canvas></div></div>
     </div>
-    ${s.by_day.length ? `<table class="chg"><tr><td class="t"><b>Tag</b></td><td><b>verkauft</b></td><td><b>kurz reserviert</b></td></tr>${s.by_day.map(r => `<tr><td class="t">${d(r[0])}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join("")}</table>` : ""}
-    <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Links kumuliert: rot = verschwundene, grün = wieder frei gewordene Kabinen seit Beobachtungsbeginn; rechts die Differenz (netto verkauft). „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).</p>`;
+    ${s.by_day.length ? `<table class="chg"><tr><td class="t"><b>Tag</b></td><td><b>verkauft</b></td><td><b>kurz reserviert</b></td></tr>${s.by_day.map(r => `<tr><td class="t">${d(r[0])}</td><td>${r[1]}${r[3] ? ` <span class="mut">· ${r[3]} zurückgezogen</span>` : ""}</td><td>${r[2]}</td></tr>`).join("")}</table>` : ""}
+    <p class="note" style="margin-top:-10px">Gezählt aus den Kabinennummern je Abruf, nur in Kategorien unter 100 freien Kabinen${s.capped_cats.length ? ` (gedeckelt und daher nicht gezählt: ${s.capped_cats.join(", ")})` : ""}. Links kumuliert: rot = verschwundene, grün = wieder frei gewordene Kabinen seit Beobachtungsbeginn; rechts netto verkauft. „Kurz reserviert“ = Kabine war weg und kam später zurück (z. B. abgebrochene Buchung).${s.withdrawn ? " „Zurückgezogen“ = AIDA hat mehrere Kabinen gemeinsam neu freigegeben und später gemeinsam wieder herausgenommen – zählt nicht als Verkauf." : ""}</p>`;
 }
 
 function focusBlock(t, ti) {
