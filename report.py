@@ -353,6 +353,88 @@ def _pricing(daten):
             "by_months": by_m, "by_weekday": by_wd}
 
 
+LONG_NIGHTS = 30                    # längere Reisen (Weltreise-Etappen) nicht in die Wert-Summe
+BLOCK_ABS, BLOCK_MIN, BLOCK_SHARE = 50, 20, 0.25   # so viel auf einmal weg = Kontingent entzogen
+CAT_GONE_MIN = 5                    # ganze Kategorie ab so vielen Kabinen auf einmal weg = entzogen
+
+
+def _fleet_sales(daten, titles):
+    """Verkäufe der 4-Monats-Reisen je Tag aus den Ereignissen in fleet/<id>.json (run.store).
+    Beim Seitenbau berechnet, damit spätere Abrufe frühere Tage korrigieren: Eine verschwundene
+    Kabine zählt nur als verkauft, wenn sie bis heute nicht wieder aufgetaucht ist („kurz weg“ sonst).
+    Verschwinden auf einmal sehr viele Kabinen einer Reise oder eine ganze Kategorie, hat AIDA ein
+    Kontingent herausgenommen („entzogen“) – das ist kein Verkauf. Reisen über LONG_NIGHTS Nächte
+    werden getrennt geführt, sonst bestimmt eine Weltreise-Etappe den Tageswert."""
+    fdir = daten / "fleet"
+    cat = {}
+    cf = daten / "catalog.json"
+    if cf.exists():
+        cat = {t["id"]: t for t in json.loads(cf.read_text())["trips"]}
+    out = {}
+    trips = {}                          # (tag, reise) -> [verkauft, neu frei, wert, ohne preis]
+    for f in fdir.glob("*.json") if fdir.exists() else []:
+        try:
+            h = json.loads(f.read_text())
+        except Exception:
+            continue
+        evs = h.get("ev") or []
+        jid = h.get("journey") or f.stem
+        long_trip = ((cat.get(jid) or {}).get("nights") or 0) > LONG_NIGHTS
+        later = set()                   # Kabinen, die nach dem jeweiligen Ereignis wieder frei wurden
+        for ev in reversed(evs):
+            day = (ev.get("ts") or "")[:10]
+            drop = ev.get("f0", 0) - ev.get("f1", 0)
+            block = drop >= BLOCK_ABS or (drop >= BLOCK_MIN and drop >= BLOCK_SHARE * ev.get("f0", 0))
+            e = out.setdefault(day, {"sold": 0, "sold_value": 0.0, "unpriced": 0, "back": 0, "short": 0,
+                                     "withdrawn": 0, "withdrawn_value": 0.0, "long_sold": 0, "long_value": 0.0})
+            t = trips.setdefault((day, jid), [0, 0, 0.0, 0])
+            for code, nums in (ev.get("g") or {}).items():
+                v = (ev.get("v") or {}).get(code)
+                whole = (ev.get("n") or {}).get(code) == 0 and len(nums) >= CAT_GONE_MIN
+                n_short = sum(1 for x in nums if x in later)
+                n = len(nums) - n_short
+                e["short"] += n_short
+                if not n:
+                    continue
+                if block or whole:
+                    e["withdrawn"] += n; e["withdrawn_value"] += (v or 0) * n
+                elif long_trip:
+                    e["long_sold"] += n; e["long_value"] += (v or 0) * n
+                else:
+                    e["sold"] += n; e["sold_value"] += (v or 0) * n
+                    t[0] += n; t[2] += (v or 0) * n
+                    if v is None:
+                        e["unpriced"] += n; t[3] += n
+            nb = sum(len(x) for x in (ev.get("b") or {}).values())
+            e["back"] += nb
+            if not long_trip:
+                t[1] += nb
+            for nums in (ev.get("b") or {}).values():
+                later.update(nums)
+    # je Tag: nach Schiff, Top-Reisen und je Schiff Top 20 verkauft / wieder frei
+    per_day = {}
+    for (day, jid), v in trips.items():
+        if v[0] or v[1]:
+            per_day.setdefault(day, {})[jid] = v
+    for day, bt in per_day.items():
+        e = out[day]
+        bs, per_ship = {}, {}
+        for k, v in bt.items():
+            ti = titles.get(k) or [None, (cat.get(k) or {}).get("ship"), None]
+            a = bs.setdefault(ti[1] or "?", [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += round(v[2])
+            per_ship.setdefault(ti[1] or "?", []).append([k, v[0], v[1], round(v[2]), v[3], ti[0], ti[2]])
+        e["by_ship"] = bs
+        e["ship_trips"] = {s: {"sold": sorted([r for r in rows if r[1] > 0], key=lambda r: -r[1])[:20],
+                               "back": sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])[:20]}
+                           for s, rows in per_ship.items()}
+        e["top"] = [[k, v[0], v[1], round(v[2]), v[3]] + (titles.get(k) or [None, None, None])
+                    for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
+    for e in out.values():
+        for k in ("sold_value", "withdrawn_value", "long_value"):
+            e[k] = round(e[k])
+    return out
+
+
 def _dashboard(daten):
     """Tageszahlen des 8-Uhr-Laufs: Katalog (Reisen gesamt, neu, entfallen, Preisänderungen) und
     die 4-Monats-Reisen (verschwundene/zurückgekehrte Kabinen und ihr Wert)."""
@@ -372,29 +454,9 @@ def _dashboard(daten):
                  down=sum(1 for p in c["price"] if p["new"] < p["old"]))
     for f in sorted((daten / "dashboard").glob("flotte-*.json")) if (daten / "dashboard").exists() else []:
         runs = json.loads(f.read_text())
-        e = days.setdefault(f.stem[7:], {})
-        e.update(f_trips=runs[-1]["trips"], f_free=runs[-1]["free"],
-                 sold=sum(r["sold"] for r in runs), back=sum(r["back"] for r in runs),
-                 sold_value=sum(r["sold_value"] for r in runs), back_value=sum(r["back_value"] for r in runs))
-        bs, bt = {}, {}
-        for r in runs:
-            for k, v in r["by_ship"].items():
-                a = bs.setdefault(k, [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
-            for k, v in r["by_trip"].items():
-                a = bt.setdefault(k, [0, 0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += v[2]
-                a[3] += v[3] if len(v) > 3 else (v[0] if not v[2] else 0)   # ältere Läufe: 0 € = ohne Preis
-        e["by_ship"] = bs
-        # je Schiff: Top 20 nach verkauft und nach zurück (zum Aufklappen im Dashboard)
-        per_ship = {}
-        for k, v in bt.items():
-            ti = titles.get(k) or [None, None, None]
-            row = [k, v[0], v[1], round(v[2]), v[3] if len(v) > 3 else 0, ti[0], ti[2]]
-            per_ship.setdefault(ti[1] or "?", []).append(row)
-        e["ship_trips"] = {s: {"sold": sorted([r for r in rows if r[1] > 0], key=lambda r: -r[1])[:20],
-                               "back": sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])[:20]}
-                           for s, rows in per_ship.items()}
-        e["top"] = [[k] + v + (titles.get(k) or [None, None, None])
-                    for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
+        days.setdefault(f.stem[7:], {}).update(f_trips=runs[-1]["trips"], f_free=runs[-1]["free"])
+    for day, e in _fleet_sales(daten, titles).items():
+        days.setdefault(day, {}).update(e)
     # Buchbare Kabinen je Tag: Summe der freien Kabinen aller 4-Monats-Reisen (aus fleet/<id>.json)
     # Die 4-Monats-Reisen werden über den Tag verteilt abgefragt: für Reisen ohne heutigen Wert gilt
     # der letzte bekannte Stand (bis zur Abfahrt), sonst sähe ein halber Tag wie ein Einbruch aus.
@@ -2044,13 +2106,14 @@ function renderDash() {
   if (!D.length) { root.innerHTML = `<p class="mut">Noch keine Tageszahlen – entstehen mit dem täglichen 8-Uhr-Lauf.</p>`; return; }
   const last = D[D.length - 1], fl = [...D].reverse().find(x => x.sold != null);
   const n = v => v == null ? "–" : Math.round(v).toLocaleString("de-DE");
-  root.innerHTML = `<p class="kmeta">Tageszahlen aus dem 8-Uhr-Lauf. Verkäufe = Kabinen, die in den Reisen der nächsten 4 Monate seit dem Vortag verschwunden sind (nur Kategorien unter 100 freien Kabinen; Wert = PREMIUM-Preis der Unterkategorie für 2 Personen).</p>
+  root.innerHTML = `<p class="kmeta">Verkäufe = Kabinen, die in den Reisen der nächsten 4 Monate verschwunden und bis heute nicht wieder frei geworden sind (nur Kategorien unter 100 freien Kabinen; Wert = PREMIUM-Listenpreis der Unterkategorie für 2 Personen). Nicht mitgezählt: Kabinen, die später wieder auftauchen („kurz weg“), und Kontingente, die AIDA herausnimmt („entzogen“: ab 50 Kabinen einer Reise auf einmal, ab 20 und einem Viertel der freien, oder eine ganze Kategorie ab 5 Kabinen). Reisen über 30 Nächte stehen getrennt. Frühere Tage können sich noch ändern, wenn Kabinen zurückkommen.</p>
     <div class="tiles">
       <div class="tile"><div class="k">Reisen im Katalog</div><div class="v">${n(last.total)}</div><div class="d">Stand ${d(last.day)}</div></div>
       <div class="tile"><div class="k">Neu / entfallen</div><div class="v">${last.new != null ? "+" + last.new + " / −" + last.gone : "–"}</div><div class="d">gegenüber Vortag</div></div>
-      <div class="tile"><div class="k">Kabinen verkauft</div><div class="v">${fl ? n(fl.sold) : "–"}</div><div class="d">${fl ? `${n(fl.back)} zurück · ${d(fl.day)}` : "ab dem nächsten Tageslauf"}</div></div>
+      <div class="tile"><div class="k">Kabinen verkauft</div><div class="v">${fl ? n(fl.sold) : "–"}</div><div class="d">${fl ? `${n(fl.back)} wieder frei · ${d(fl.day)}` : "ab dem nächsten Tageslauf"}</div></div>
       <div class="tile"><div class="k">Wert verkauft</div><div class="v">${fl ? eur(fl.sold_value) : "–"}</div><div class="d">${fl && fl.sold ? "Ø " + eur(fl.sold_value / fl.sold) + " je Kabine" : ""}</div></div>
     </div>
+    ${fl && (fl.withdrawn || fl.short || fl.long_sold) ? `<p class="note" style="margin:0 0 14px">Am ${d(fl.day)} nicht als Verkauf gezählt: ${[fl.withdrawn ? `${n(fl.withdrawn)} Kabinen entzogen (${eur(fl.withdrawn_value)})` : "", fl.short ? `${n(fl.short)} nur kurz weg` : "", fl.long_sold ? `${n(fl.long_sold)} Kabinen auf Reisen über 30 Nächte (${eur(fl.long_value)})` : ""].filter(Boolean).join(" · ")}.</p>` : ""}
     <div class="charts">
       <div class="chart"><h3>Katalog: Reisen im Katalog je Tag</h3><div class="box"><canvas id="db1"></canvas></div></div>
       <div class="chart"><h3>Buchbare Kabinen je Tag (Reisen der nächsten 4 Monate)</h3><div class="box"><canvas id="db2"></canvas></div></div>
@@ -2110,7 +2173,7 @@ function renderDash() {
                  y: {grid: {color: css("--grid")}, ticks: {color: css("--text-2"), precision: 0, callback: v => n(v)}}},
         elements: {line: {borderWidth: 2, tension: 0}, point: {radius: 4}}}}));
   }
-  line("db3", [["Wert verkauft", "sold_value", "--s1"]], v => eur(v));
+  line("db3", [["verkauft", "sold_value", "--s1"], ["Kontingent entzogen", "withdrawn_value", "--s6"]], v => eur(v));
   line("db4", [["rauf", "up", "--up"], ["runter", "down", "--down"]], n);
 }
 

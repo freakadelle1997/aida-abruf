@@ -303,6 +303,9 @@ def run_fleet(batch=None):
                 if v is None:
                     v = type_price(t, code)
                 return v
+            # Ereignis für die Auswertung im Dashboard (report._fleet_sales): wer verschwand, wer kam,
+            # zu welchem Preis, Gesamtzahl frei vorher/nachher (für die Erkennung entzogener Kontingente)
+            ev = {"ts": stamp, "g": {}, "b": {}, "v": {}, "n": {}, "f0": len(old), "f1": len(new)}
             for code in set(h["cabins"]) | set(cats):
                 o, n = set(h["cabins"].get(code, [])), set(cats.get(code, []))
                 if len(o) >= 100 or len(n) >= 100:
@@ -311,6 +314,12 @@ def run_fleet(batch=None):
                 if not gone and not back:
                     continue
                 v = value(code)
+                if gone:
+                    ev["g"][code] = sorted(gone)
+                if back:
+                    ev["b"][code] = sorted(back)
+                ev["v"][code] = v
+                ev["n"][code] = len(n)          # frei danach (0 = ganze Kategorie weg)
                 if v is None:
                     summ["unpriced"] += len(gone)
                 summ["sold"] += len(gone); summ["back"] += len(back)
@@ -321,7 +330,9 @@ def run_fleet(batch=None):
                 tr[0] += len(gone); tr[1] += len(back); tr[2] += (v or 0) * len(gone)
                 if v is None:
                     tr[3] += len(gone)          # verkauft, aber ohne Preis (nicht bewertbar)
-        h["choice"] = bool(new)          # keine einzige Kabine -> AIDA teilt zu (keine Kabinenwahl)
+            if ev["g"] or ev["b"]:
+                h.setdefault("ev", []).append(ev)
+        h["choice"] = bool(new)         # keine einzige Kabine -> AIDA teilt zu (keine Kabinenwahl)
         h["counts"][today] = {k: len(v) for k, v in cats.items() if v}
         if h.get("cabins") is not None:
             mv = h["moves"].setdefault(today, {"+": [], "-": []})
