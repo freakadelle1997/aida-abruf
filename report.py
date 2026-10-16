@@ -372,6 +372,7 @@ def _fleet_sales(daten, titles):
         cat = {t["id"]: t for t in json.loads(cf.read_text())["trips"]}
     out = {}
     trips = {}                          # (tag, reise) -> [verkauft, neu frei, wert, ohne preis]
+    meta = {}
     for f in fdir.glob("*.json") if fdir.exists() else []:
         try:
             h = json.loads(f.read_text())
@@ -379,6 +380,7 @@ def _fleet_sales(daten, titles):
             continue
         evs = h.get("ev") or []
         jid = h.get("journey") or f.stem
+        meta[jid] = [None, h.get("ship"), h.get("start")]   # Ersatz, wenn die Reise nicht mehr im Katalog steht
         long_trip = ((cat.get(jid) or {}).get("nights") or 0) > LONG_NIGHTS
         later = set()                   # Kabinen, die nach dem jeweiligen Ereignis wieder frei wurden
         for ev in reversed(evs):
@@ -420,14 +422,14 @@ def _fleet_sales(daten, titles):
         e = out[day]
         bs, per_ship = {}, {}
         for k, v in bt.items():
-            ti = titles.get(k) or [None, (cat.get(k) or {}).get("ship"), None]
+            ti = titles.get(k) or meta.get(k) or [None, None, None]
             a = bs.setdefault(ti[1] or "?", [0, 0, 0]); a[0] += v[0]; a[1] += v[1]; a[2] += round(v[2])
             per_ship.setdefault(ti[1] or "?", []).append([k, v[0], v[1], round(v[2]), v[3], ti[0], ti[2]])
         e["by_ship"] = bs
         e["ship_trips"] = {s: {"sold": sorted([r for r in rows if r[1] > 0], key=lambda r: -r[1])[:20],
                                "back": sorted([r for r in rows if r[2] > 0], key=lambda r: -r[2])[:20]}
                            for s, rows in per_ship.items()}
-        e["top"] = [[k, v[0], v[1], round(v[2]), v[3]] + (titles.get(k) or [None, None, None])
+        e["top"] = [[k, v[0], v[1], round(v[2]), v[3]] + (titles.get(k) or meta.get(k) or [None, None, None])
                     for k, v in sorted(bt.items(), key=lambda kv: -kv[1][0])[:15]]
     for e in out.values():
         for k in ("sold_value", "withdrawn_value", "long_value"):
